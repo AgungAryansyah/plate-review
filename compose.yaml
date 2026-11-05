@@ -1,0 +1,23 @@
+services:
+  plate-review:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      PLATE_REVIEW_SOURCE_DIR: /data/source
+      PLATE_REVIEW_EXPORT_DIR: /data/exports
+      PLATE_REVIEW_STATE_DIR: /app/state
+      PLATE_REVIEW_WEB_DIR: /app/web/dist
+      PLATE_REVIEW_BIND: 0.0.0.0:8080
+      PLATE_REVIEW_APP_ORIGIN: ${PLATE_REVIEW_APP_ORIGIN:-http://127.0.0.1:8080}
+      PLATE_REVIEW_SECURE_COOKIE: ${PLATE_REVIEW_SECURE_COOKIE:-false}
+      PLATE_REVIEW_TRUST_PROXY_HEADERS: ${PLATE_REVIEW_TRUST_PROXY_HEADERS:-false}
+    volumes:
+      - "${PLATE_REVIEW_SOURCE_HOST:?Set PLATE_REVIEW_SOURCE_HOST in .env}:/data/source:ro"
+      - "${PLATE_REVIEW_EXPORT_HOST:?Set PLATE_REVIEW_EXPORT_HOST in .env}:/data/exports"
+      - plate-review-state:/app/state
+
+volumes:
+  plate-review-state:
