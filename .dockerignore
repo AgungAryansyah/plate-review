@@ -1,9 +1,0 @@
-.git
-.env
-target
-web/node_modules
-web/dist
-var
-*.sqlite*
-playwright-report
-test-results
