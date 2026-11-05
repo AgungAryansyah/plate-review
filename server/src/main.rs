@@ -3,6 +3,7 @@ mod auth;
 mod catalog;
 mod config;
 mod db;
+mod exports;
 mod media;
 mod review;
 
@@ -134,6 +135,20 @@ async fn serve() -> Result<()> {
             "/api/admin/videos/{id}/accept-source",
             post(review::accept_changed_source),
         )
+        .route(
+            "/api/exports",
+            post(exports::create_job).get(exports::list_jobs),
+        )
+        .route("/api/exports/{id}", get(exports::get_job))
+        .route("/api/exports/{id}/retry", post(exports::retry_job))
+        .route(
+            "/api/exports/{id}/manifest",
+            get(exports::download_manifest),
+        )
+        .route(
+            "/api/exports/{id}/files/{name}",
+            get(exports::download_file).head(exports::download_file),
+        )
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/me", get(auth::me))
         .route_layer(middleware::from_fn_with_state(
@@ -155,6 +170,7 @@ async fn serve() -> Result<()> {
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
+    tokio::spawn(exports::worker(state.clone()));
     let listener = TcpListener::bind(settings.bind)
         .await
         .with_context(|| format!("Cannot bind to {}", settings.bind))?;
