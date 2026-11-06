@@ -1021,10 +1021,12 @@ async fn verify_clip(path: &FsPath) -> anyhow::Result<i64> {
         .args([
             "-v",
             "error",
+            "-select_streams",
+            "v:0",
             "-show_entries",
-            "format=duration",
+            "stream=time_base:format=duration",
             "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "default=noprint_wrappers=1",
         ])
         .arg(path)
         .output()
@@ -1033,8 +1035,15 @@ async fn verify_clip(path: &FsPath) -> anyhow::Result<i64> {
     if !probe.status.success() {
         anyhow::bail!("FFprobe rejected the exported clip");
     }
-    let seconds = String::from_utf8_lossy(&probe.stdout)
-        .trim()
+    let metadata = String::from_utf8_lossy(&probe.stdout);
+    let time_base = metadata
+        .lines()
+        .find_map(|line| line.strip_prefix("time_base="))
+        .context("Exported clip has no video time base")?;
+    let seconds = metadata
+        .lines()
+        .find_map(|line| line.strip_prefix("duration="))
+        .context("Exported clip has no video duration")?
         .parse::<f64>()?;
     if !seconds.is_finite() || seconds <= 0.0 {
         anyhow::bail!("Exported clip has no video duration");
@@ -1042,7 +1051,17 @@ async fn verify_clip(path: &FsPath) -> anyhow::Result<i64> {
     let output = tokio::process::Command::new("ffmpeg")
         .args(["-xerror", "-v", "error", "-nostdin", "-i"])
         .arg(path)
-        .args(["-map", "0:v:0", "-f", "null", "-"])
+        .args([
+            "-map",
+            "0:v:0",
+            "-fps_mode",
+            "passthrough",
+            "-enc_time_base",
+            time_base,
+            "-f",
+            "null",
+            "-",
+        ])
         .output()
         .await
         .context("Cannot run FFmpeg integrity check")?;
