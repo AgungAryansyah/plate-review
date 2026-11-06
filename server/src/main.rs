@@ -159,11 +159,10 @@ async fn serve() -> Result<()> {
     let app = Router::new()
         .route("/api/auth/login", post(auth::login))
         .route("/api/health", get(health))
-        .nest_service(
-            "/",
+        .merge(api)
+        .fallback_service(
             ServeDir::new(&settings.web_dir).append_index_html_on_directories(true),
         )
-        .merge(api)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::check_origin,
