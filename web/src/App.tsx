@@ -5,8 +5,29 @@ import type { ExportJob, Interval, ReviewDraft, User, Video, VideoDetail } from 
 import { draftKey, loadDraft, saveDraft } from "./storage";
 
 type SyncState = "saved" | "saving" | "offline" | "conflict" | "local_error";
+type LibrarySort = "recent" | "camera" | "folder";
+
+type VideoGroup = { key: string; title: string | null; videos: Video[] };
 
 const shortSteps: Record<string, number> = { ArrowLeft: -0.1, ArrowRight: 0.1 };
+const libraryCollator = new Intl.Collator(undefined, { numeric: true });
+
+function groupVideos(videos: Video[], sort: LibrarySort): VideoGroup[] {
+  if (sort === "recent") return [{ key: "recent", title: null, videos }];
+
+  const groups = new Map<string, VideoGroup>();
+  for (const video of videos) {
+    const key = sort === "folder" ? video.session_id : video.camera_id;
+    let group = groups.get(key);
+    if (!group) {
+      const title = sort === "folder" ? key : `${key} · ${video.camera_name.replaceAll("_", " ")}`;
+      group = { key, title, videos: [] };
+      groups.set(key, group);
+    }
+    group.videos.push(video);
+  }
+  return [...groups.values()].sort((a, b) => libraryCollator.compare(a.key, b.key));
+}
 
 function createUuid(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -67,6 +88,7 @@ export default function App() {
   const [jobsExpanded, setJobsExpanded] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
   const [cameraFilter, setCameraFilter] = useState("all");
+  const [librarySort, setLibrarySort] = useState<LibrarySort>("recent");
   const [search, setSearch] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [detail, setDetail] = useState<VideoDetail | null>(null);
@@ -413,10 +435,17 @@ export default function App() {
     changeZoom(Math.min(8, Math.max(1, factor)));
   }, [changeZoom]);
 
+  const videoGroups = useMemo(() => groupVideos(videos, librarySort), [videos, librarySort]);
+
   const jumpNext = useCallback(async () => {
-    const candidate = videos.find((video) => video.id !== activeId && video.source_status === "available" && video.review.status !== "reviewed" && (!video.claim || video.claim.mine || video.claim.expires_at_ms <= Date.now()));
-    if (candidate) await openVideo(candidate);
-  }, [activeId, openVideo, videos]);
+    for (const group of videoGroups) {
+      const candidate = group.videos.find((video) => video.id !== activeId && video.source_status === "available" && video.review.status !== "reviewed" && (!video.claim || video.claim.mine || video.claim.expires_at_ms <= Date.now()));
+      if (candidate) {
+        await openVideo(candidate);
+        return;
+      }
+    }
+  }, [activeId, openVideo, videoGroups]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -557,22 +586,30 @@ export default function App() {
       <aside className="library-panel">
         <div className="panel-heading"><div><p className="eyebrow">VIDEO LIBRARY</p><h2>Recordings</h2></div><div className="panel-heading-actions">{user.role === "admin" && <button className="icon-button" title="Refresh source index" onClick={() => void api("/api/admin/scan", json("POST", {})).then(refreshVideos).catch((reason) => setError(reason.message))}>↻</button>}<span className="count-pill">{videos.length}</span></div></div>
         <div className="filters">
-          <input aria-label="Search videos" placeholder="Search camera or file" value={search} onChange={(event) => setSearch(event.target.value)} />
+          <input aria-label="Search videos" placeholder="Search camera, folder, or file" value={search} onChange={(event) => setSearch(event.target.value)} />
           <select aria-label="Review status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="unreviewed">Unreviewed</option><option value="in_progress">In progress</option><option value="reviewed">Reviewed</option><option value="all">All videos</option></select>
-          <select aria-label="Camera" value={cameraFilter} onChange={(event) => setCameraFilter(event.target.value)}><option value="all">All cameras</option>{cameras.map(([id,name]) => <option value={id} key={id}>{id} · {name}</option>)}</select>
+          <select aria-label="Sort recordings" value={librarySort} onChange={(event) => setLibrarySort(event.target.value as LibrarySort)}>
+            <option value="recent">Newest first</option>
+            <option value="camera">By camera</option>
+            <option value="folder">By folder</option>
+          </select>
+          <select className="camera-filter" aria-label="Camera" value={cameraFilter} onChange={(event) => setCameraFilter(event.target.value)}><option value="all">All cameras</option>{cameras.map(([id,name]) => <option value={id} key={id}>{id} · {name}</option>)}</select>
         </div>
         <div className="library-list" aria-label="Videos">
-          {videos.map((video) => <article className={`video-row ${video.id === activeId ? "active" : ""}`} key={video.id}>
-            <button className="video-row-main" onClick={() => void openVideo(video)}>
-              <span className="row-topline"><strong>{video.camera_id} · {video.camera_name.replaceAll("_", " ")}</strong><span className={`status-dot ${video.review.status}`} /></span>
-              <span className="row-meta">{dateLabel(video.session_started_at)} · {fmtTime(video.duration_ms)}</span>
-              <span className="row-bottom"><span>{video.session_id}</span><span>{video.review.intervals.length} clips</span></span>
-              {video.interruption_count > 0 && <span className="row-warning">{video.interruption_count} interruption{video.interruption_count === 1 ? "" : "s"}</span>}
-              {video.source_status !== "available" && <span className="row-warning">Source {video.source_status}</span>}
-              {video.claim && !video.claim.mine && video.claim.expires_at_ms > now && <span className="row-claim">Editing · {video.claim.username}</span>}
-            </button>
-            {video.source_status === "available" && video.review.status === "reviewed" && video.review.intervals.length > 0 && <input className="export-check" type="checkbox" aria-label={`Select ${video.source_path} for export`} checked={selectedForExport.has(video.id)} onChange={() => toggleExportSelection(video.id)} />}
-          </article>)}
+          {videoGroups.map((group) => <section key={group.key}>
+            {group.title && <h3 className="library-group-title" title={group.title}>{group.title}</h3>}
+            {group.videos.map((video) => <article className={`video-row ${video.id === activeId ? "active" : ""}`} key={video.id}>
+              <button className="video-row-main" onClick={() => void openVideo(video)}>
+                <span className="row-topline"><strong>{video.camera_id} · {video.camera_name.replaceAll("_", " ")}</strong><span className={`status-dot ${video.review.status}`} /></span>
+                <span className="row-meta">{dateLabel(video.session_started_at)} · {fmtTime(video.duration_ms)}</span>
+                <span className="row-bottom"><span>{librarySort === "folder" ? video.source_path.split("/").at(-1) : video.session_id}</span><span>{video.review.intervals.length} clips</span></span>
+                {video.interruption_count > 0 && <span className="row-warning">{video.interruption_count} interruption{video.interruption_count === 1 ? "" : "s"}</span>}
+                {video.source_status !== "available" && <span className="row-warning">Source {video.source_status}</span>}
+                {video.claim && !video.claim.mine && video.claim.expires_at_ms > now && <span className="row-claim">Editing · {video.claim.username}</span>}
+              </button>
+              {video.source_status === "available" && video.review.status === "reviewed" && video.review.intervals.length > 0 && <input className="export-check" type="checkbox" aria-label={`Select ${video.source_path} for export`} checked={selectedForExport.has(video.id)} onChange={() => toggleExportSelection(video.id)} />}
+            </article>)}
+          </section>)}
           {videos.length === 0 && <div className="empty-state"><span className="empty-icon">⌕</span><strong>No videos match</strong><p>Change a filter or refresh the source index.</p>{user.role === "admin" && <button className="quiet-button" onClick={() => void api("/api/admin/scan", json("POST", {})).then(refreshVideos).catch((e) => setError(e.message))}>Refresh library</button>}</div>}
         </div>
         <div className="library-footer"><span>{videos.filter((video) => video.source_status === "available").length} available</span><span>{videos.filter((video) => video.review.status === "reviewed").length} reviewed</span></div>
