@@ -1,6 +1,6 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use std::env;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -36,7 +36,9 @@ impl Settings {
             .context("PLATE_REVIEW_BIND must be an IP address and port")?;
         let app_origin =
             env::var("PLATE_REVIEW_APP_ORIGIN").unwrap_or_else(|_| "http://127.0.0.1:5173".into());
-        validate_app_origin(&app_origin)?;
+        let secure_cookie = env_bool("PLATE_REVIEW_SECURE_COOKIE", true)?;
+        let allow_tailscale_http = env_bool("PLATE_REVIEW_ALLOW_TAILSCALE_HTTP", false)?;
+        validate_app_origin_with_options(&app_origin, allow_tailscale_http, secure_cookie)?;
         Ok(Self {
             source_dir,
             state_dir,
@@ -44,7 +46,7 @@ impl Settings {
             web_dir,
             bind,
             app_origin,
-            secure_cookie: env_bool("PLATE_REVIEW_SECURE_COOKIE", true)?,
+            secure_cookie,
             trust_proxy_headers: env_bool("PLATE_REVIEW_TRUST_PROXY_HEADERS", false)?,
         })
     }
@@ -58,7 +60,16 @@ impl Settings {
     }
 }
 
+#[cfg(test)]
 fn validate_app_origin(value: &str) -> Result<()> {
+    validate_app_origin_with_options(value, false, true)
+}
+
+fn validate_app_origin_with_options(
+    value: &str,
+    allow_tailscale_http: bool,
+    secure_cookie: bool,
+) -> Result<()> {
     let uri = value
         .parse::<http::Uri>()
         .context("PLATE_REVIEW_APP_ORIGIN must be an origin URL")?;
@@ -67,12 +78,15 @@ fn validate_app_origin(value: &str) -> Result<()> {
             uri.host(),
             Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
         );
+    let tailscale_http = allow_tailscale_http
+        && uri.scheme_str() == Some("http")
+        && uri.host().is_some_and(is_tailscale_ipv4);
     let secure_http = uri.scheme_str() == Some("https") && uri.host().is_some();
     let has_path = !uri.path().is_empty() && uri.path() != "/";
     let has_credentials = uri
         .authority()
         .is_some_and(|authority| authority.as_str().contains('@'));
-    if (!local_http && !secure_http)
+    if (!local_http && !tailscale_http && !secure_http)
         || has_path
         || value.ends_with('/')
         || uri.query().is_some()
@@ -80,7 +94,17 @@ fn validate_app_origin(value: &str) -> Result<()> {
     {
         bail!("PLATE_REVIEW_APP_ORIGIN must be a valid HTTPS origin outside local development");
     }
+    if tailscale_http && secure_cookie {
+        bail!("PLATE_REVIEW_SECURE_COOKIE must be false for an HTTP Tailscale origin");
+    }
     Ok(())
+}
+
+fn is_tailscale_ipv4(host: &str) -> bool {
+    host.parse::<Ipv4Addr>().is_ok_and(|ip| {
+        let [first, second, _, _] = ip.octets();
+        first == 100 && (64..=127).contains(&second)
+    })
 }
 
 fn env_bool(name: &str, default: bool) -> Result<bool> {

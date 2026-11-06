@@ -20,7 +20,9 @@ docker compose up -d
 
 The create-user command prompts for a password. Add reviewer accounts with `docker compose run --rm plate-review create-user NAME`. Reset or disable an account with `reset-password NAME` or `disable-user NAME`.
 
-Open `http://127.0.0.1:8080` on the server. From another computer, connect with an SSH tunnel such as `ssh -L 8080:127.0.0.1:8080 SERVER` and open that address locally. For later public access, place an HTTPS reverse proxy on the same host. Keep the app port bound to localhost. Set `PLATE_REVIEW_APP_ORIGIN` to the exact public origin, set `PLATE_REVIEW_SECURE_COOKIE=true`, and set `PLATE_REVIEW_TRUST_PROXY_HEADERS=true` only when a trusted reverse proxy sends `X-Forwarded-For`.
+Open `http://127.0.0.1:8080` on the server. From another computer, connect with an SSH tunnel such as `ssh -L 8080:127.0.0.1:8080 SERVER` and open that address locally. For later public access, place an HTTPS reverse proxy on the same host. Keep the app port bound to localhost by default. Set `PLATE_REVIEW_APP_ORIGIN` to the exact public origin, set `PLATE_REVIEW_SECURE_COOKIE=true`, and set `PLATE_REVIEW_TRUST_PROXY_HEADERS=true` only when a trusted reverse proxy sends `X-Forwarded-For`.
+
+For a private Tailscale HTTP experiment, set `PLATE_REVIEW_HOST_BIND` to the server's Tailscale IPv4 address and set `PLATE_REVIEW_APP_ORIGIN` to the matching `http://IP:8080` origin. Set `PLATE_REVIEW_ALLOW_TAILSCALE_HTTP=true` and `PLATE_REVIEW_SECURE_COOKIE=false`. This exception accepts only IPv4 addresses in Tailscale's `100.64.0.0/10` range. HTTP session cookies do not use the Secure flag, so use this only on a private tailnet. Bind the port to the Tailscale address only.
 
 ## Run for local development
 
