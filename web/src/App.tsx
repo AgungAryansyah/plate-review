@@ -8,10 +8,19 @@ type SyncState = "saved" | "saving" | "offline" | "conflict" | "local_error";
 
 const shortSteps: Record<string, number> = { ArrowLeft: -0.1, ArrowRight: 0.1 };
 
+function createUuid(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function sessionClientId(): string {
   let id = sessionStorage.getItem("plate-review-client-id");
   if (!id) {
-    id = crypto.randomUUID();
+    id = createUuid();
     sessionStorage.setItem("plate-review-client-id", id);
   }
   return id;
@@ -290,7 +299,7 @@ export default function App() {
       redoStack.current = [];
     }
     const changed = update(current);
-    const next = { ...changed, pendingMutationId: crypto.randomUUID(), baseRevision: current.baseRevision, status: changed.status === "reviewed" ? "in_progress" : changed.status };
+    const next = { ...changed, pendingMutationId: createUuid(), baseRevision: current.baseRevision, status: changed.status === "reviewed" ? "in_progress" : changed.status };
     void commitLocal(next);
   }, [commitLocal]);
 
@@ -300,14 +309,14 @@ export default function App() {
     if (!current?.pendingStartMs && current?.pendingStartMs !== 0) { setError("Set an interval start with I first."); return; }
     if (currentTimeMs <= current.pendingStartMs) { setError("The end must be after the start."); return; }
     setError("");
-    const interval: Interval = { id: crypto.randomUUID(), start_ms: current.pendingStartMs, end_ms: currentTimeMs };
+    const interval: Interval = { id: createUuid(), start_ms: current.pendingStartMs, end_ms: currentTimeMs };
     changeVideoState((state) => ({ ...state, intervals: [...state.intervals, interval].sort((a,b) => a.start_ms-b.start_ms), pendingStartMs: null, status: "in_progress" }), true);
   }, [changeVideoState, currentTimeMs]);
 
   const markReviewed = useCallback(() => {
     const current = draftRef.current;
     if (!current || !claimRef.current) return;
-    void commitLocal({ ...current, pendingStartMs: null, status: "reviewed", pendingMutationId: crypto.randomUUID() });
+    void commitLocal({ ...current, pendingStartMs: null, status: "reviewed", pendingMutationId: createUuid() });
     void refreshVideos();
   }, [commitLocal, refreshVideos]);
 
@@ -355,7 +364,7 @@ export default function App() {
       claimRef.current = true;
       setClaimHeld(true);
       const current = draftRef.current;
-      await commitLocal({ ...current, baseRevision: loaded.video.review.revision, pendingMutationId: crypto.randomUUID() });
+      await commitLocal({ ...current, baseRevision: loaded.video.review.revision, pendingMutationId: createUuid() });
       setReadOnlyReason("");
       setSyncState("saving");
     } catch (reason) {
