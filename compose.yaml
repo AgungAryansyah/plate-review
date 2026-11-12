@@ -11,14 +11,19 @@ services:
       PLATE_REVIEW_STATE_DIR: /app/state
       PLATE_REVIEW_WEB_DIR: /app/web/dist
       PLATE_REVIEW_BIND: 0.0.0.0:8080
+      PLATE_REVIEW_BOX_DATA_DIR: /data/boxes
+      PLATE_REVIEW_SAM_QUEUE_DIR: /data/boxes/sam-jobs
       PLATE_REVIEW_APP_ORIGIN: ${PLATE_REVIEW_APP_ORIGIN:-http://127.0.0.1:8080}
       PLATE_REVIEW_SECURE_COOKIE: ${PLATE_REVIEW_SECURE_COOKIE:-false}
       PLATE_REVIEW_ALLOW_TAILSCALE_HTTP: ${PLATE_REVIEW_ALLOW_TAILSCALE_HTTP:-false}
       PLATE_REVIEW_TRUST_PROXY_HEADERS: ${PLATE_REVIEW_TRUST_PROXY_HEADERS:-false}
+    group_add:
+      - "${PLATE_REVIEW_SHARED_GID:-1003}"
     volumes:
       - "${PLATE_REVIEW_SOURCE_HOST:?Set PLATE_REVIEW_SOURCE_HOST in .env}:/data/source:ro"
       - "${PLATE_REVIEW_EXPORT_HOST:?Set PLATE_REVIEW_EXPORT_HOST in .env}:/data/exports"
       - plate-review-state:/app/state
+      - "${PLATE_REVIEW_BOX_HOST:-./var/boxes}:/data/boxes"
 
 volumes:
   plate-review-state:

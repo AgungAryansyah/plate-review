@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod boxes;
 mod catalog;
 mod config;
 mod db;
@@ -117,6 +118,16 @@ async fn serve() -> Result<()> {
         login_limiter: LoginLimiter::default(),
     };
     let api = Router::new()
+        .route("/api/boxes/clips", get(boxes::list))
+        .route("/api/boxes/clips/{id}", get(boxes::get))
+        .route(
+            "/api/boxes/clips/{id}/stream",
+            get(boxes::stream).head(boxes::stream),
+        )
+        .route("/api/boxes/clips/{id}/frame", get(boxes::frame))
+        .route("/api/boxes/clips/{id}/segment", post(boxes::segment))
+        .route("/api/boxes/clips/{id}/review", put(boxes::save))
+        .route("/api/boxes/clips/{id}/export", get(boxes::export))
         .route("/api/videos", get(review::list_videos))
         .route("/api/videos/{id}", get(review::get_video))
         .route(
@@ -160,9 +171,7 @@ async fn serve() -> Result<()> {
         .route("/api/auth/login", post(auth::login))
         .route("/api/health", get(health))
         .merge(api)
-        .fallback_service(
-            ServeDir::new(&settings.web_dir).append_index_html_on_directories(true),
-        )
+        .fallback_service(ServeDir::new(&settings.web_dir).append_index_html_on_directories(true))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::check_origin,
@@ -170,6 +179,7 @@ async fn serve() -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
     tokio::spawn(exports::worker(state.clone()));
+    tokio::spawn(boxes::worker(state.clone()));
     let listener = TcpListener::bind(settings.bind)
         .await
         .with_context(|| format!("Cannot bind to {}", settings.bind))?;

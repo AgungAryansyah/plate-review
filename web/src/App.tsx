@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerE
 import { ApiError, api, json } from "./api";
 import type { ExportJob, Interval, ReviewDraft, User, Video, VideoDetail } from "./contracts";
 import { draftKey, loadDraft, saveDraft } from "./storage";
+import BoxReview from "./BoxReview";
 
 type SyncState = "saved" | "saving" | "offline" | "conflict" | "local_error";
 type LibrarySort = "recent" | "camera" | "folder";
@@ -106,6 +107,7 @@ export default function App() {
   const [selectedForExport, setSelectedForExport] = useState<Set<string>>(new Set());
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [now, setNow] = useState(Date.now());
+  const [boxMode, setBoxMode] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef<ReviewDraft | null>(null);
@@ -577,10 +579,11 @@ export default function App() {
   }
 
   return <div className="app-shell">
-    <header className="topbar">
+    {!boxMode && <header className="topbar">
       <div className="brand"><span className="brand-mark small">PR</span><div><strong>Plate Review</strong><span>Manual clip selection</span></div></div>
-      <div className="topbar-right"><span className={`network-indicator ${isOnline ? "online" : "offline"}`}>{isOnline ? "Connected" : "Offline"}</span><span className="user-label">{user.username}</span><button className="quiet-button" onClick={() => setHelpOpen(true)}>Shortcuts <kbd>?</kbd></button><button className="quiet-button" onClick={() => void logout()}>Sign out</button></div>
-    </header>
+      <div className="topbar-right"><button className="mode-button" onClick={() => setBoxMode(true)}>Plate boxes <span>↗</span></button><span className={`network-indicator ${isOnline ? "online" : "offline"}`}>{isOnline ? "Connected" : "Offline"}</span><span className="user-label">{user.username}</span><button className="quiet-button" onClick={() => setHelpOpen(true)}>Shortcuts <kbd>?</kbd></button><button className="quiet-button" onClick={() => void logout()}>Sign out</button></div>
+    </header>}
+    {boxMode ? <BoxReview onBack={() => setBoxMode(false)} /> : <>
     {error && !activeVideo && <div className="global-notice" role="status"><span>{error}</span><button aria-label="Dismiss message" onClick={() => setError("")}>×</button></div>}
     <main className={`workspace ${activeId ? "has-editor" : ""}`}>
       <aside className="library-panel">
@@ -655,6 +658,7 @@ export default function App() {
     </main>
 
     <footer className="bottom-bar"><div><span className="disk-dot" />Original videos remain on the server</div><div>{selectedForExport.size > 0 && <button className="export-button" onClick={() => void exportSelected()}>Export {selectedForExport.size} reviewed video{selectedForExport.size === 1 ? "" : "s"} <span>↗</span></button>}<span className="footer-status">{activeJobCount ? `${activeJobCount} export job(s) running` : "Export queue idle"}</span></div></footer>
+    </>}
 
     {jobs.length > 0 && <section className="jobs-dock" aria-label="Export jobs"><button className="jobs-header" aria-expanded={jobsExpanded} onClick={() => setJobsExpanded((value) => !value)}><strong>Export jobs</strong><span>{activeJobCount} active · {jobs.length} total</span><i>{jobsExpanded ? "−" : "+"}</i></button>{jobsExpanded && jobs.map((job) => <div className="job-row" key={job.id}><div className="job-line"><span>{job.status === "complete" ? "Export complete" : job.phase}</span><b>{job.status === "complete" ? "DONE" : `${Math.round(job.progress*100)}%`}</b></div><div className="job-progress"><i style={{ width: `${job.progress*100}%` }} /></div>{job.error && <span className="job-error">{job.error}</span>}{job.items.filter((item) => item.error).map((item) => <span className="job-error" key={item.id}>{item.video_id.slice(0,8)}: {item.error}</span>)}{job.items.flatMap((item) => item.outputs).map((output) => <a className="output-link" key={`${job.id}-${output.file_name}`} href={`/api/exports/${job.id}/files/${encodeURIComponent(output.file_name)}`} download={output.file_name}>{output.file_name}<span>{humanBytes(output.bytes)}</span></a>)}{(job.status === "complete" || job.status === "failed") && <a className="manifest-link" href={`/api/exports/${job.id}/manifest`} download={`${job.id}-manifest.json`}>Download manifest</a>}{job.status === "failed" && <button className="small-button" onClick={() => void api<ExportJob>(`/api/exports/${job.id}/retry`, json("POST", {})).then((updated) => setJobs((current) => current.map((item) => item.id === updated.id ? updated : item))).catch((reason) => setError(reason.message))}>Retry failed files</button>}</div>)}</section>}
 
