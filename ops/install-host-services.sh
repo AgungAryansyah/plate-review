@@ -26,7 +26,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=$HOME/plate-review
-ExecStart=$HOME/plate-review/ops/deploy.sh
+ExecStart=/usr/bin/sg docker -c "$HOME/plate-review/ops/deploy.sh"
 TimeoutStartSec=1800
 SuccessExitStatus=75
 UNIT

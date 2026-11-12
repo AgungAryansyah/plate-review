@@ -107,7 +107,7 @@ export default function App() {
   const [selectedForExport, setSelectedForExport] = useState<Set<string>>(new Set());
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [now, setNow] = useState(Date.now());
-  const [boxMode, setBoxMode] = useState(false);
+  const [boxMode, setBoxMode] = useState(() => window.location.hash === "#boxes");
   const videoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef<ReviewDraft | null>(null);

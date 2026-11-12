@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, json } from "./api";
 import type { BoxClip, BoxClipDetail, BoxSettings, BoxTrack, Detection } from "./box-contracts";
 import "./BoxReview.css";
@@ -15,8 +15,11 @@ function filteredDetections(track: BoxTrack, settings: BoxSettings, width: numbe
     (d.x_max - d.x_min) * (d.y_max - d.y_min) <= width * height * settings.max_area_fraction)
     .slice().sort((a, b) => a.frame - b.frame);
   if (raw.length < settings.minimum_frames) return [];
+  let left = 0, right = 0;
   const filtered = raw.flatMap((d) => {
-    const near = raw.filter((other) => Math.abs(other.frame - d.frame) <= settings.smoothing_radius);
+    while (left < raw.length && raw[left].frame < d.frame - settings.smoothing_radius) left++;
+    while (right < raw.length && raw[right].frame <= d.frame + settings.smoothing_radius) right++;
+    const near = raw.slice(left, right);
     const box = [d.x_min, d.y_min, d.x_max - d.x_min, d.y_max - d.y_min];
     const med = [
       median(near.map((other) => other.x_min)), median(near.map((other) => other.y_min)),
@@ -79,19 +82,19 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
 
   const activeDetection = (track: BoxTrack): Detection | undefined => {
     if (!detail) return undefined;
-    const usable = filteredDetections(track, settings, detail.meta.width, detail.meta.height);
+    const usable = track.detections;
     if (!usable.length) return undefined;
     const nearest = usable.reduce((best, item) => Math.abs(item.timestamp_ms - currentMs) < Math.abs(best.timestamp_ms - currentMs) ? item : best);
     return Math.abs(nearest.timestamp_ms - currentMs) <= 500 / detail.meta.fps + 2 ? nearest : undefined;
   };
 
-  const visibleTracks = tracks;
+  const visibleTracks = useMemo(() => detail ? tracks.map((track) => ({ ...track, detections: filteredDetections(track, settings, detail.meta.width, detail.meta.height) })) : [], [tracks, settings, detail?.meta.width, detail?.meta.height]);
   const jobIsActive = detail?.clip.status === "queued" || detail?.clip.status === "running";
   const updateTrack = (id: string, change: Partial<BoxTrack>) => setTracks((current) => current.map((track) => track.id === id ? { ...track, ...change } : track));
   const updateSetting = (key: keyof BoxSettings, value: number) => setSettings((current) => ({ ...current, [key]: value }));
 
   useEffect(() => {
-    if (!framePreview || !playing || !detail) { framePreviewTime.current = null; return; }
+    if ((!framePreview && !videoFailed) || !playing || !detail) { framePreviewTime.current = null; return; }
     let timer: number;
     const tick = () => {
       const now = performance.now();
@@ -110,7 +113,19 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
     };
     timer = window.setTimeout(tick, 50);
     return () => clearTimeout(timer);
-  }, [detail, framePreview, playing]);
+  }, [detail, framePreview, videoFailed, playing]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video?.requestVideoFrameCallback) return;
+    let handle = 0;
+    const tick = (_time: number, metadata: VideoFrameCallbackMetadata) => {
+      if (!video.paused) setCurrentMs(metadata.mediaTime * 1000);
+      handle = video.requestVideoFrameCallback(tick);
+    };
+    handle = video.requestVideoFrameCallback(tick);
+    return () => video.cancelVideoFrameCallback(handle);
+  }, [detail?.clip.id]);
 
   const save = async () => {
     if (!detail) return false;
@@ -157,10 +172,10 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
         <video ref={videoRef} className={framePreview || videoFailed ? "box-video-hidden" : ""} src={`/api/boxes/clips/${encodeURIComponent(detail.clip.id)}/stream`} preload="metadata" playsInline onTimeUpdate={(event) => setCurrentMs(event.currentTarget.currentTime * 1000)} onPlay={() => { if (!framePreview) setPlaying(true); }} onPause={() => { if (!framePreview) setPlaying(false); }} onError={() => setVideoFailed(true)} />
         {(videoFailed || framePreview || !playing) && <div className="box-decoded-frame"><img src={frameUrl} alt={`Decoded source frame at ${clock(currentMs)}`} />{(videoFailed || framePreview) && <span>{videoFailed ? "Video playback unavailable · showing decoded frame" : "Decoded frame preview · 5 frames per second"}</span>}</div>}
         <svg className="box-overlay" viewBox={`0 0 ${detail.meta.width} ${detail.meta.height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label="Detected plate boxes">{visibleTracks.map((track) => { const detection = activeDetection(track); if (!detection) return null; const active = selectedTrack === track.id; return <g key={track.id} onClick={() => setSelectedTrack(track.id)} className={active ? "box-active" : ""}><rect x={detection.x_min} y={detection.y_min} width={detection.x_max - detection.x_min} height={detection.y_max - detection.y_min} /><text x={detection.x_min} y={Math.max(16, detection.y_min - 7)}>{track.id} · {(detection.confidence * 100).toFixed(0)}%</text></g>; })}</svg>
-      </div><div className="box-transport"><button aria-label={playing ? "Pause clip" : "Play clip"} onClick={() => { if (framePreview) { setPlaying((value) => !value); return; } const video = videoRef.current; if (!video) return; if (video.paused) void video.play().catch(() => setVideoFailed(true)); else video.pause(); }}>{playing ? "Ⅱ" : "▶"}</button><input aria-label="Clip timeline" type="range" min="0" max={duration || 1} step="1" value={Math.min(currentMs, duration)} onChange={(event) => { const value = Number(event.target.value); setCurrentMs(value); if (videoRef.current) videoRef.current.currentTime = value / 1000; }} /><span>{clock(currentMs)}</span><button className="preview-toggle" onClick={() => { const next = !framePreview; if (next) { videoRef.current?.pause(); setPlaying(false); } else if (videoRef.current) videoRef.current.currentTime = currentMs / 1000; setFramePreview(next); }}>{framePreview ? "Video" : "Frame preview"}</button></div></section>
-      <aside className="box-sidebar"><section className="box-panel"><div className="box-panel-title"><div><p className="eyebrow">TRACK REVIEW</p><h3>Plate candidates <span>{tracks.length}</span></h3></div><span className="box-small-note">No OCR</span></div>{tracks.length ? <div className="track-list">{tracks.map((track) => <div className={`track-row ${selectedTrack === track.id ? "focused" : ""}`} key={track.id} onClick={() => setSelectedTrack(track.id)}><label className="track-toggle" onClick={(event) => event.stopPropagation()}><input type="checkbox" disabled={jobIsActive} checked={track.selected} onChange={(event) => updateTrack(track.id, { selected: event.target.checked })} aria-label={`Include box ${track.id}`} /><span>{track.id}</span></label><input className="plate-entry" disabled={jobIsActive} aria-label={`Plate text for box ${track.id}`} placeholder="Enter plate text" value={track.plate_text} onChange={(event) => updateTrack(track.id, { plate_text: event.target.value })} /><small>{filteredDetections(track, settings, detail.meta.width, detail.meta.height).length} frames after filtering</small></div>)}</div> : <p className="box-hint">No tracks yet. Run segmentation to find plate candidates.</p>}</section>
+      </div><div className="box-transport"><button aria-label={playing ? "Pause clip" : "Play clip"} onClick={() => { if (framePreview || videoFailed) { setPlaying((value) => !value); return; } const video = videoRef.current; if (!video) return; if (video.paused) void video.play().catch(() => setVideoFailed(true)); else video.pause(); }}>{playing ? "Ⅱ" : "▶"}</button><input aria-label="Clip timeline" type="range" min="0" max={duration || 1} step="1" value={Math.min(currentMs, duration)} onChange={(event) => { const value = Number(event.target.value); setCurrentMs(value); if (videoRef.current) videoRef.current.currentTime = value / 1000; }} /><span>{clock(currentMs)}</span><button className="preview-toggle" onClick={() => { const next = !framePreview; if (next) { videoRef.current?.pause(); setPlaying(false); } else if (videoRef.current) videoRef.current.currentTime = currentMs / 1000; setFramePreview(next); }}>{framePreview ? "Video" : "Frame preview"}</button></div></section>
+      <aside className="box-sidebar"><section className="box-panel"><div className="box-panel-title"><div><p className="eyebrow">TRACK REVIEW</p><h3>Plate candidates <span>{tracks.length}</span></h3></div><span className="box-small-note">No OCR</span></div>{tracks.length ? <div className="track-list">{tracks.map((track) => <div className={`track-row ${selectedTrack === track.id ? "focused" : ""}`} key={track.id} onClick={() => setSelectedTrack(track.id)}><label className="track-toggle" onClick={(event) => event.stopPropagation()}><input type="checkbox" disabled={jobIsActive} checked={track.selected} onChange={(event) => updateTrack(track.id, { selected: event.target.checked })} aria-label={`Include box ${track.id}`} /><span>{track.id}</span></label><input className="plate-entry" disabled={jobIsActive} aria-label={`Plate text for box ${track.id}`} placeholder="Enter plate text" value={track.plate_text} onChange={(event) => updateTrack(track.id, { plate_text: event.target.value })} /><small>{visibleTracks.find((item) => item.id === track.id)?.detections.length ?? 0} frames after filtering</small></div>)}</div> : <p className="box-hint">No tracks yet. Run segmentation to find plate candidates.</p>}</section>
         <section className="box-panel box-settings"><div className="box-panel-title"><div><p className="eyebrow">SEGMENTATION</p><h3>Run settings</h3></div></div><label>Minimum confidence <output>{settings.min_confidence.toFixed(2)}</output><input disabled={jobIsActive} aria-label="Minimum confidence" type="range" min="0" max="1" step="0.01" value={settings.min_confidence} onChange={(event) => updateSetting("min_confidence", Number(event.target.value))} /></label><label>Median jitter <span>px</span><input disabled={jobIsActive} aria-label="Median jitter" type="number" min="0" max="100" step="1" value={settings.jitter_px} onChange={(event) => updateSetting("jitter_px", Number(event.target.value))} /></label><label>Smoothing window <span>frames</span><input disabled={jobIsActive} aria-label="Smoothing window" type="number" min="1" max="51" step="1" value={settings.smoothing_radius} onChange={(event) => updateSetting("smoothing_radius", Number(event.target.value))} /></label><label>Minimum track length <span>frames</span><input disabled={jobIsActive} aria-label="Minimum frames" type="number" min="1" max="10000" step="1" value={settings.minimum_frames} onChange={(event) => updateSetting("minimum_frames", Number(event.target.value))} /></label><label>Maximum box area <output>{(settings.max_area_fraction * 100).toFixed(1)}%</output><input disabled={jobIsActive} aria-label="Maximum area fraction" type="range" min="0.001" max="0.25" step="0.001" value={settings.max_area_fraction} onChange={(event) => updateSetting("max_area_fraction", Number(event.target.value))} /></label><label>Maximum size ratio <output>{settings.max_size_ratio.toFixed(1)}×</output><input disabled={jobIsActive} aria-label="Maximum size ratio" type="range" min="1" max="10" step="0.1" value={settings.max_size_ratio} onChange={(event) => updateSetting("max_size_ratio", Number(event.target.value))} /></label><p className="box-hint">Boxes stay unchecked until you include a track. Plate text is entered manually.{jobIsActive && " Editing is paused while segmentation runs."}</p></section>
-        <div className="box-actions"><button className="secondary-button" onClick={() => void save()} disabled={saving || jobIsActive}>{saving ? "Saving…" : "Save review"}</button><button className="primary-button" onClick={() => void segment()} disabled={jobIsActive}>{jobIsActive ? "Segmentation running" : "Segment plates"}</button><button className="export-dataset" onClick={() => void exportDataset()} disabled={saving || jobIsActive || detail.clip.status !== "complete"}>Export dataset ↓</button></div>
+        <div className="box-actions"><button className="secondary-button" onClick={() => void save()} disabled={saving || jobIsActive}>{saving ? "Saving…" : "Save review"}</button><button className="primary-button" onClick={() => void segment()} disabled={jobIsActive || detail.clip.status === "complete"}>{jobIsActive ? "Segmentation running" : detail.clip.status === "complete" ? "Segmentation complete" : "Segment plates"}</button><button className="export-dataset" onClick={() => void exportDataset()} disabled={saving || jobIsActive || detail.clip.status !== "complete"}>Export dataset ↓</button></div>
       </aside></div>
     </>}
   </main>;
