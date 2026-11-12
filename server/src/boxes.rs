@@ -680,12 +680,15 @@ async fn admit_new_clips(state: &AppState) -> Result<(), ApiError> {
     let next = sqlx::query("SELECT c.id,e.requested_by FROM box_clips c JOIN export_jobs e ON e.id=c.export_job_id WHERE NOT EXISTS (SELECT 1 FROM box_jobs j WHERE j.clip_id=c.id) ORDER BY c.created_at_ms,c.name LIMIT 1")
         .fetch_optional(&state.pool).await.map_err(ApiError::internal)?;
     if let Some(row) = next {
-        queue_clip(
-            state,
-            &row.get::<String, _>("id"),
-            &row.get::<String, _>("requested_by"),
-        )
-        .await?;
+        let id: String = row.get("id");
+        let requested_by: String = row.get("requested_by");
+        if let Err(error) = queue_clip(state, &id, &requested_by).await {
+            // A corrupt/missing clip must not block discovery of every later clip.
+            // Retain a visible terminal failure; manual retry remains available.
+            sqlx::query("INSERT INTO box_jobs(id,clip_id,requested_by,status,phase,error,source_hash,created_at_ms,ended_at_ms) SELECT ?,?,?,'failed','preparation_failed',?,'',?,? WHERE NOT EXISTS(SELECT 1 FROM box_jobs WHERE clip_id=?)")
+                .bind(Uuid::new_v4().to_string()).bind(&id).bind(requested_by).bind(error.message)
+                .bind(now_ms()).bind(now_ms()).bind(&id).execute(&state.pool).await.map_err(ApiError::internal)?;
+        }
     }
     Ok(())
 }
@@ -968,6 +971,11 @@ mod tests {
         // Automatic admission is idempotent and respects the same durable queue as manual jobs.
         sqlx::query("INSERT INTO users(id,username,password_hash,role,created_at_ms) VALUES('owner','owner','unused','reviewer',0)").execute(&state.pool).await.unwrap();
         sqlx::query("INSERT INTO export_jobs(id,requested_by,status,total_items,created_at_ms) VALUES('export','owner','complete',1,0)").execute(&state.pool).await.unwrap();
+        std::fs::create_dir_all(queue_root(&state)).unwrap();
+        std::fs::write(queue_root(&state).join("PAUSED"), b"").unwrap();
+        admit_new_clips(&state).await.unwrap();
+        assert!(latest_job(&state, "clip").await.unwrap().is_none());
+        std::fs::remove_file(queue_root(&state).join("PAUSED")).unwrap();
         admit_new_clips(&state).await.unwrap();
         admit_new_clips(&state).await.unwrap();
         let job = latest_job(&state, "clip").await.unwrap().unwrap();
@@ -991,6 +999,19 @@ mod tests {
                 .await
                 .unwrap(),
             1
+        );
+        sqlx::query("INSERT INTO box_clips(id,source_video_id,export_job_id,name,relative_path,bytes,duration_ms,meta_json,created_at_ms) VALUES('broken','recording','export','missing.mp4','missing.mp4',0,200,?,1)").bind(serde_json::to_string(&meta).unwrap()).execute(&state.pool).await.unwrap();
+        sqlx::query("INSERT INTO box_clips(id,source_video_id,export_job_id,name,relative_path,bytes,duration_ms,meta_json,created_at_ms) VALUES('later','recording','export','later.mp4','later.mp4',0,200,?,2)").bind(serde_json::to_string(&meta).unwrap()).execute(&state.pool).await.unwrap();
+        std::fs::write(state.settings.export_dir.join("later.mp4"), raw).unwrap();
+        admit_new_clips(&state).await.unwrap();
+        assert_eq!(
+            latest_job(&state, "broken").await.unwrap().unwrap().status,
+            "failed"
+        );
+        admit_new_clips(&state).await.unwrap();
+        assert_eq!(
+            latest_job(&state, "later").await.unwrap().unwrap().status,
+            "queued"
         );
         let response = export(
             State(state),

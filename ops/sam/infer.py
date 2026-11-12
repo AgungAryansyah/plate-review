@@ -92,6 +92,7 @@ def main():
             time.sleep(30)
         index, fraction = gpu
         os.environ['CUDA_VISIBLE_DEVICES'] = str(index)
+        os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
         update('loading_model', .03, f'Loading SAM 3.1 on L40 GPU {index}; process budget <=30 decimal GB. Model unloads after this job.')
         import cv2
         import numpy as np
@@ -125,7 +126,7 @@ def main():
         timestamps = [max(0, round((v - first) * 1000)) for v in timestamps]
         if len(timestamps) != meta['frame_count']:
             raise RuntimeError(f'Source frame-count mismatch: probe {len(timestamps)}, expected {meta["frame_count"]}')
-        model = build_sam3_multiplex_video_predictor(checkpoint_path=str(checkpoint), max_num_objects=256, multiplex_count=16, use_fa3=False, use_rope_real=True, compile=False, warm_up=False, async_loading_frames=True, default_output_prob_thresh=.25)
+        model = build_sam3_multiplex_video_predictor(checkpoint_path=str(checkpoint), max_num_objects=64, multiplex_count=16, use_fa3=False, use_rope_real=True, compile=False, warm_up=False, async_loading_frames=True, default_output_prob_thresh=.25)
         session = None
         tracks = {}
         coverage = set()
