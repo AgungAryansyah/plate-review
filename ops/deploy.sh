@@ -35,7 +35,10 @@ old_image=$(docker inspect plate-review-plate-review-1 --format '{{.Image}}')
 if docker image inspect "$old_image" >/dev/null 2>&1; then
   docker tag "$old_image" plate-review-rollback:latest
 else
-  docker commit --pause=true plate-review-plate-review-1 plate-review-rollback:latest >/dev/null
+  # A running container can outlive missing Docker image-store blobs.
+  runtime_backup="$plate_data/backups/runtime-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+  docker export plate-review-plate-review-1 | gzip -1 >"$runtime_backup"
+  docker import --change 'ENTRYPOINT ["plate-review"]' --change 'CMD ["serve"]' --change 'USER 10001' --change 'WORKDIR /app' "$runtime_backup" plate-review-rollback:latest >/dev/null
 fi
 # Retain the rollback image before the build moves the latest tag.
 docker compose --project-name plate-review --env-file .env build
