@@ -8,7 +8,7 @@ const detail = { clip, meta: { width: 1280, height: 720, fps: 25, frame_count: 5
 function response(body: unknown) { return { ok: true, status: 200, json: async () => body } as Response; }
 
 describe("Plate boxes", () => {
-  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it("starts with clip selection and does not load video or segment until requested", async () => {
     const initialDetail = { ...detail, clip: { ...clip, status: "unsegmented" } };
@@ -106,7 +106,7 @@ describe("Plate boxes", () => {
     expect(maxActivePosts).toBe(1);
   });
 
-  it("zooms source image and SVG overlay together", async () => {
+  it("keeps the native source visible while paused and zooms its overlay together", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/boxes/clips" ? response([clip]) : response(detail));
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
@@ -114,7 +114,85 @@ describe("Plate boxes", () => {
     await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
     await user.click(screen.getByRole("button", { name: "Zoom in" }));
     expect(screen.getByRole("img", { name: "Detected plate boxes" })).toHaveStyle({ transform: "translate(0px, 0px) scale(1.25)" });
-    expect(screen.getByRole("img", { name: /Decoded source frame/ })).toHaveStyle({ transform: "translate(0px, 0px) scale(1.25)" });
+    expect(screen.queryByRole("img", { name: /Decoded source frame/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Frame preview" })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/frame?"))).toBe(false);
+  });
+
+  it("hides both box outlines and labels without changing track inclusion", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/boxes/clips" ? response([clip]) : response(detail));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<BoxReview onBack={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
+
+    expect(screen.getByRole("img", { name: "Detected plate boxes" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Hide boxes" }));
+    expect(screen.queryByRole("img", { name: "Detected plate boxes" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show boxes" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("checkbox", { name: "Include box box-01" })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Show boxes" }));
+    expect(screen.getByRole("img", { name: "Detected plate boxes" }).querySelectorAll("g")).toHaveLength(1);
+    expect(screen.getByRole("checkbox", { name: "Include box box-01" })).not.toBeChecked();
+  });
+
+  it("keeps the displayed frame's boxes aligned until the next PNG is decoded", async () => {
+    type PreloadImage = { src: string; onload: ((event: Event) => void) | null; onerror: ((event: Event) => void) | null; decode: () => Promise<void> };
+    const images: PreloadImage[] = [];
+    const decodeResolvers: Array<() => void> = [];
+    class ControlledImage implements PreloadImage {
+      src = "";
+      onload: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      decode() { return new Promise<void>((resolve) => decodeResolvers.push(resolve)); }
+      constructor() { images.push(this); }
+    }
+    vi.stubGlobal("Image", ControlledImage);
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const movingTrack = { ...detail.tracks[0], detections: [0, 40, 80].map((timestamp_ms, frame) => ({ frame, timestamp_ms, x_min: 100 + frame * 200, y_min: 200, x_max: 220 + frame * 200, y_max: 240, confidence: 0.9 })) };
+    const movingDetail = { ...detail, tracks: [movingTrack] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/boxes/clips" ? response([clip]) : response(movingDetail));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<BoxReview onBack={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
+    await user.click(screen.getByRole("button", { name: "Frame preview" }));
+
+    await waitFor(() => expect(images).toHaveLength(1));
+    images[0].onload?.(new Event("load"));
+    await waitFor(() => expect(decodeResolvers).toHaveLength(1));
+    decodeResolvers[0]();
+    await waitFor(() => expect(screen.getByRole("img", { name: "Decoded source frame at 0:00" })).toBeInTheDocument());
+    const boxes = () => screen.getByRole("img", { name: "Detected plate boxes" }).querySelector("rect");
+    expect(boxes()).toHaveAttribute("x", "100");
+
+    fireEvent.change(screen.getByRole("slider", { name: "Clip timeline" }), { target: { value: "40" } });
+    await waitFor(() => expect(images).toHaveLength(2));
+    expect(images[1].src).toContain("timestamp_ms=40");
+    expect(screen.getByRole("img", { name: "Decoded source frame at 0:00" })).toBeInTheDocument();
+    expect(boxes()).toHaveAttribute("x", "100");
+    images[1].onload?.(new Event("load"));
+    await waitFor(() => expect(decodeResolvers).toHaveLength(2));
+    expect(boxes()).toHaveAttribute("x", "100");
+    decodeResolvers[1]();
+    await waitFor(() => expect(images[1].src).toContain("timestamp_ms=40"));
+    await waitFor(() => expect(boxes()).toHaveAttribute("x", "300"));
+  });
+
+  it("explains all filters and that they do not rerun segmentation", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/boxes/clips" ? response([clip]) : response(detail));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<BoxReview onBack={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
+
+    expect(screen.getByText("These filters affect boxes shown and exported. They do not rerun SAM.")).toBeInTheDocument();
+    expect(screen.getByText(/Smooth small box-edge changes within this many pixels/)).toBeInTheDocument();
+    expect(screen.getByText(/neighbors within this many frames/)).toBeInTheDocument();
+    expect(screen.getByText(/lower confidence score/)).toBeInTheDocument();
+    expect(screen.getByText(/at least this many frames/)).toBeInTheDocument();
+    expect(screen.getByText(/share of the full frame/)).toBeInTheDocument();
+    expect(screen.getByText(/nearby median width or height/)).toBeInTheDocument();
   });
 
   it("selects a box on captured pointer click, but keeps selection while dragging to pan", async () => {
@@ -140,6 +218,6 @@ describe("Plate boxes", () => {
     fireEvent.pointerUp(stage, { button: 0, pointerId: 2, clientX: 125, clientY: 110 });
     expect(second).toHaveClass("box-active");
     expect(screen.getByRole("img", { name: "Detected plate boxes" })).toHaveStyle({ transform: "translate(25px, 10px) scale(1.25)" });
-    expect(screen.getByRole("img", { name: /Decoded source frame/ })).toHaveAttribute("draggable", "false");
+    expect(screen.queryByRole("img", { name: /Decoded source frame/ })).not.toBeInTheDocument();
   });
 });

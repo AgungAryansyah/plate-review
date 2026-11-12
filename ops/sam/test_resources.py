@@ -1,4 +1,7 @@
 import json
+import io
+from contextlib import redirect_stdout
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -41,6 +44,43 @@ class ResourceProfiles(unittest.TestCase):
         self.assertEqual(control.retry_profile({'error_kind':'cuda_oom', 'batch_size':2}), 1)
         self.assertIsNone(control.retry_profile({'error_kind':'cuda_oom', 'batch_size':1}))
         self.assertIsNone(control.retry_profile({'error':'Invalid source'}))
+
+    @patch('control.subprocess.Popen')
+    @patch('control.live_process', return_value=False)
+    def test_oom_replay_launches_fresh_processes_and_stops_at_one(self, live, spawn):
+        spawn.return_value = SimpleNamespace(pid=789)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'launch.json').write_text(json.dumps({'pid':123,'attempt':1}))
+            for batch, expected in ((4, 2), (2, 1), (1, None)):
+                status = {'id':root.name,'status':'failed','error_kind':'cuda_oom','batch_size':batch,'logs':['prior output']}
+                (root / 'status.json').write_text(json.dumps(status))
+                before = spawn.call_count
+                with patch('sys.argv', ['control.py', str(root)]), redirect_stdout(io.StringIO()):
+                    control.main()
+                if expected:
+                    self.assertEqual(json.loads((root / 'runtime.json').read_text())['batch_ceiling'], expected)
+                    self.assertEqual(spawn.call_count, before + 1)
+                    # Reconnecting while the replay is alive never launches another process.
+                    with patch('control.live_process', return_value=True), patch('sys.argv', ['control.py', str(root)]), redirect_stdout(io.StringIO()):
+                        control.main()
+                    self.assertEqual(spawn.call_count, before + 1)
+                else:
+                    self.assertEqual(spawn.call_count, before)
+                    self.assertEqual(json.loads((root / 'status.json').read_text())['status'], 'failed')
+
+    @patch('control.subprocess.Popen')
+    @patch('control.live_process', return_value=True)
+    def test_retry_waits_for_old_process_to_exit(self, live, spawn):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'launch.json').write_text(json.dumps({'pid':123,'attempt':1}))
+            (root / 'status.json').write_text(json.dumps({'id':root.name,'status':'failed','error_kind':'cuda_oom','batch_size':4,'logs':[]}))
+            out = io.StringIO()
+            with patch('sys.argv', ['control.py', str(root)]), redirect_stdout(out):
+                control.main()
+            self.assertEqual(json.loads(out.getvalue())['phase'], 'releasing_for_retry')
+            spawn.assert_not_called()
 
     @patch('control.Path.read_bytes')
     def test_process_identity_requires_script_and_job_path(self, read):

@@ -16,7 +16,7 @@ import traceback
 
 
 def atomic(path, data):
-    tmp = path.with_suffix('.tmp')
+    tmp = path.with_name(path.name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
     with tmp.open('w') as f:
         json.dump(data, f, separators=(',', ':'))
         f.flush()
@@ -77,7 +77,7 @@ def main():
     job_id = request['job_id']
     runtime = json.loads((root / 'runtime.json').read_text()) if (root / 'runtime.json').exists() else {}
     ceiling = runtime.get('batch_ceiling', 4)
-    status = {'id': job_id, 'status': 'running', 'progress': 0., 'phase': 'starting', 'logs': runtime.get('logs', []), 'error': None, 'pid': os.getpid(), 'attempt': runtime.get('attempt', 1)}
+    status = {'id': job_id, 'status': 'running', 'progress': 0., 'phase': 'starting', 'logs': runtime.get('logs', []), 'error': None, 'pid': os.getpid(), 'attempt': runtime.get('attempt', 1), 'peak_vram_gb': 0.0}
     def update(phase, progress=None, message=None, state=None, error=None):
         status['phase'] = phase
         if progress is not None:
@@ -128,6 +128,7 @@ def main():
                 try:
                     usage = subprocess.check_output(['nvidia-smi', '--query-compute-apps=pid,used_memory', '--format=csv,noheader,nounits'], text=True)
                     memory = sum(int(line.split(',')[1]) * 1024 ** 2 for line in usage.splitlines() if line.split(',')[0].strip() == str(os.getpid()))
+                    status['peak_vram_gb'] = max(status['peak_vram_gb'], round(memory / 1e9, 3))
                     if memory > 30_000_000_000 or ram_available() < 2_000_000_000:
                         update('failed', state='failed', error='SAM resource guard stopped this job', message='Only our SAM process exceeded its resource guard; the clip can be retried.')
                         os._exit(137)
@@ -187,7 +188,7 @@ def main():
                 if len(coverage) % 10 == 0 or len(coverage) == len(timestamps):
                     update('segmenting', .12 + .82 * len(coverage) / len(timestamps), f'Processed {len(coverage)}/{len(timestamps)} frames; {len(tracks)} candidate tracks.')
         finally:
-            update('unloading_model', .95, 'Closing SAM session and releasing CUDA memory.')
+            update('unloading_model', message='Closing SAM session and releasing CUDA memory.')
             if session:
                 model.handle_request({'type': 'close_session', 'session_id': session})
             del model
@@ -196,7 +197,7 @@ def main():
             stop_watchdog.set()
         if len(coverage) != len(timestamps):
             raise RuntimeError(f'Incomplete timeline: {len(coverage)}/{len(timestamps)} frames')
-        proposals = {'schema': 'plate-box-proposals/v1', 'source_sha256': request['source_sha256'], 'processed_frames': len(coverage), 'meta': meta, 'processing': {'batch_size': batch, 'effective_budget_gb': effective / 1e9, 'attempt': status['attempt']},
+        proposals = {'schema': 'plate-box-proposals/v1', 'source_sha256': request['source_sha256'], 'processed_frames': len(coverage), 'meta': meta, 'processing': {'batch_size': batch, 'effective_budget_gb': effective / 1e9, 'attempt': status['attempt'], 'peak_vram_gb': status['peak_vram_gb']},
                      'tracks': [{'id': key, 'selected': False, 'plate_text': '', 'detections': sorted(ds, key=lambda d:d['frame'])} for key, ds in sorted(tracks.items(), key=lambda kv:int(kv[0]))]}
         atomic(root / 'proposals.json', proposals)
         update('complete', 1., f'Complete: {len(tracks)} tracks, {sum(len(v) for v in tracks.values())} box frames. SAM unloaded. No OCR was run.', state='complete')
