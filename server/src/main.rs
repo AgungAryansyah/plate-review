@@ -147,6 +147,7 @@ async fn serve() -> Result<()> {
         .route("/api/boxes/clips/{id}/frame", get(boxes::frame))
         .route("/api/boxes/clips/{id}/segment", post(boxes::segment))
         .route("/api/boxes/clips/{id}/review", put(boxes::save))
+        .route("/api/boxes/clips/{id}/done", post(boxes::done))
         .route("/api/boxes/clips/{id}/export", get(boxes::export))
         .route("/api/videos", get(review::list_videos))
         .route("/api/videos/{id}", get(review::get_video))

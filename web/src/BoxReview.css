@@ -31,6 +31,7 @@
 .clip-card > span i { padding: 0 4px; color: #555b66; font-style: normal; }
 .clip-status { padding: 4px 7px; border: 1px solid #343841; border-radius: 4px; color: #a3a8b0; background: #22252c; font: 8px var(--mono); text-transform: uppercase; }
 .clip-status.complete { border-color: #365d54; color: #8bd3c2; background: #1d2b28; }
+.clip-status.need_label { border-color: #695638; color: #e6c17e; background: #302919; }
 .clip-status.running, .clip-status.queued { border-color: #695638; color: #e6c17e; background: #302919; }
 .clip-status.failed { border-color: #68403e; color: #ea9a94; background: #342121; }
 .clip-progress, .box-progress { display: block; width: 100%; height: 3px; overflow: hidden; border-radius: 3px; background: #30343c; }
@@ -105,6 +106,7 @@
 .export-dataset { grid-column: 1 / -1; min-height: 37px !important; border: 1px solid #3c6c5f; border-radius: 7px; color: #ade3d2; background: #20342e; cursor: pointer; font-size: 10px; font-weight: 600; }
 .export-dataset:hover:not(:disabled) { background: #29483d; }
 .export-dataset:disabled { opacity: .42; cursor: default; }
+.done-message { grid-column: 1 / -1; color: #8bd3c2; font-size: 9px; line-height: 1.45; overflow-wrap: anywhere; }
 .box-zoom-controls { display: flex; align-items: center; gap: 4px; }
 .box-zoom-controls button { min-width: 25px; height: 23px; padding: 0 6px; border: 1px solid #343942; border-radius: 5px; color: #aaafb8; background: #22252c; cursor: pointer; font: 9px var(--mono); }
 .box-zoom-controls button:disabled { opacity: .4; cursor: default; }

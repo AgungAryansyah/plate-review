@@ -94,6 +94,7 @@ pub struct Clip {
     pub status: String,
     pub progress: f64,
     pub error: Option<String>,
+    pub review_state: String,
 }
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Job {
@@ -118,6 +119,17 @@ pub struct SaveBody {
     expected_revision: i64,
     tracks: Vec<Choice>,
     settings: Settings,
+}
+#[derive(Deserialize)]
+pub struct DoneBody {
+    expected_revision: i64,
+    tracks: Vec<Choice>,
+    settings: Settings,
+}
+#[derive(Serialize)]
+pub struct DoneResult {
+    pub clip: Detail,
+    pub saved_to: String,
 }
 #[derive(Deserialize, Default)]
 pub struct FrameQuery {
@@ -192,7 +204,7 @@ async fn latest_job(state: &AppState, id: &str) -> Result<Option<Job>, ApiError>
 }
 async fn clip(state: &AppState, id: &str) -> Result<Clip, ApiError> {
     let r = sqlx::query(
-        "SELECT id,source_video_id,export_job_id,name,bytes,duration_ms FROM box_clips WHERE id=?",
+        "SELECT id,source_video_id,export_job_id,name,bytes,duration_ms,reviewed_at_ms FROM box_clips WHERE id=?",
     )
     .bind(id)
     .fetch_optional(&state.pool)
@@ -213,6 +225,12 @@ async fn clip(state: &AppState, id: &str) -> Result<Clip, ApiError> {
             .unwrap_or_else(|| "unsegmented".into()),
         progress: job.as_ref().map(|j| j.progress).unwrap_or(0.),
         error: job.and_then(|j| j.error),
+        review_state: if r.get::<Option<i64>, _>("reviewed_at_ms").is_some() {
+            "complete"
+        } else {
+            "need_label"
+        }
+        .into(),
     })
 }
 async fn source_path(state: &AppState, id: &str) -> Result<PathBuf, ApiError> {
@@ -439,9 +457,21 @@ pub async fn save(
 ) -> Result<Json<Detail>, ApiError> {
     validate_settings(&body.settings)?;
     let d = detail(&state, &id).await?;
+    let choices = validate_review(&d, &mut body.tracks)?;
+    let update=sqlx::query("UPDATE box_clips SET review_json=?,settings_json=?,reviewed_at_ms=NULL,revision=revision+1 WHERE id=? AND revision=?")
+        .bind(serde_json::to_string(&choices).map_err(ApiError::internal)?).bind(serde_json::to_string(&body.settings).map_err(ApiError::internal)?).bind(&id).bind(body.expected_revision).execute(&state.pool).await.map_err(ApiError::internal)?;
+    if update.rows_affected() == 0 {
+        return Err(ApiError::conflict(
+            "This clip was updated in another session. Reload before saving.",
+        ));
+    }
+    Ok(Json(detail(&state, &id).await?))
+}
+
+fn validate_review(d: &Detail, tracks: &mut [Choice]) -> Result<Vec<Choice>, ApiError> {
     let valid: HashSet<_> = d.tracks.iter().map(|t| t.id.as_str()).collect();
     let mut seen = HashSet::new();
-    for c in &mut body.tracks {
+    for c in tracks.iter_mut() {
         c.plate_text = c
             .plate_text
             .split_whitespace()
@@ -449,12 +479,12 @@ pub async fn save(
             .join(" ")
             .to_uppercase();
         if !valid.contains(c.id.as_str())
-            || !seen.insert(&c.id)
+            || !seen.insert(c.id.as_str())
             || c.plate_text.len() > 64
             || !c
                 .plate_text
                 .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-')
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == ' ' || ch == '-')
         {
             return Err(ApiError::bad("Invalid box ID or plate text"));
         }
@@ -462,14 +492,144 @@ pub async fn save(
     if seen.len() != valid.len() {
         return Err(ApiError::bad("The review must contain every track ID"));
     }
-    let update=sqlx::query("UPDATE box_clips SET review_json=?,settings_json=?,revision=revision+1 WHERE id=? AND revision=?")
-        .bind(serde_json::to_string(&body.tracks).map_err(ApiError::internal)?).bind(serde_json::to_string(&body.settings).map_err(ApiError::internal)?).bind(&id).bind(body.expected_revision).execute(&state.pool).await.map_err(ApiError::internal)?;
-    if update.rows_affected() == 0 {
+    Ok(tracks.to_vec())
+}
+
+pub async fn done(
+    State(state): State<AppState>,
+    Extension(_user): Extension<UserView>,
+    Path(id): Path<String>,
+    Json(mut body): Json<DoneBody>,
+) -> Result<Json<DoneResult>, ApiError> {
+    validate_settings(&body.settings)?;
+    let current = detail(&state, &id).await?;
+    if current.clip.status != "complete" {
         return Err(ApiError::conflict(
-            "This clip was updated in another session. Reload before saving.",
+            "Wait for segmentation to finish before marking this clip done",
         ));
     }
-    Ok(Json(detail(&state, &id).await?))
+    let choices = validate_review(&current, &mut body.tracks)?;
+    let by_id: HashMap<_, _> = choices
+        .iter()
+        .map(|choice| (choice.id.as_str(), choice))
+        .collect();
+    let chosen: Vec<_> = current
+        .tracks
+        .iter()
+        .filter_map(|track| {
+            let choice = by_id.get(track.id.as_str())?;
+            if !choice.selected || choice.plate_text.trim().is_empty() {
+                return None;
+            }
+            let mut selected = track.clone();
+            selected.selected = true;
+            selected.plate_text = choice.plate_text.clone();
+            let detections = filtered(&selected, &body.settings, &current.meta);
+            (!detections.is_empty()).then(|| (selected.id, selected.plate_text, detections))
+        })
+        .collect();
+    if chosen.is_empty() {
+        return Err(ApiError::bad(
+            "Include at least one box, enter its plate text, and keep detections after filtering",
+        ));
+    }
+    let update = sqlx::query("UPDATE box_clips SET review_json=?,settings_json=?,reviewed_at_ms=NULL,revision=revision+1 WHERE id=? AND revision=?")
+        .bind(serde_json::to_string(&choices).map_err(ApiError::internal)?)
+        .bind(serde_json::to_string(&body.settings).map_err(ApiError::internal)?)
+        .bind(&id).bind(body.expected_revision).execute(&state.pool).await.map_err(ApiError::internal)?;
+    if update.rows_affected() == 0 {
+        return Err(ApiError::conflict(
+            "This clip was updated in another session. Reload before marking it done.",
+        ));
+    }
+
+    let source = source_path(&state, &id).await?;
+    let root = std::env::var_os("PLATE_REVIEW_BOX_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.settings.state_dir.join("boxes"))
+        .join("dataset-exports");
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(ApiError::internal)?;
+    let folder_name = safe_stem(&current.clip.name, &id);
+    let destination = root.join(&folder_name);
+    let temp = root.join(format!(".{}.tmp-{}", id, Uuid::new_v4()));
+    let clip_id = id.clone();
+    let source_name = current.clip.name.clone();
+    let meta = current.meta.clone();
+    let settings = body.settings.clone();
+    let revision = body.expected_revision + 1;
+    let output_video_name = format!("{}.mp4", safe_stem(&current.clip.name, &id));
+    let temp_for_worker = temp.clone();
+    let output_video_for_worker = output_video_name.clone();
+    let generated = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        std::fs::create_dir(&temp_for_worker)?;
+        let mut csv = csv::Writer::from_path(temp_for_worker.join("annotations.csv"))?;
+        csv.write_record(["video_id", "box_id", "timestamp_ms", "x_min", "y_min", "x_max", "y_max", "plate_text"])?;
+        for (box_id, plate_text, detections) in chosen {
+            for detection in detections {
+                csv.serialize((&clip_id, &box_id, detection.timestamp_ms, detection.x_min, detection.y_min, detection.x_max, detection.y_max, &plate_text))?;
+            }
+        }
+        csv.flush()?;
+        std::fs::copy(&source, temp_for_worker.join(&output_video_for_worker))?;
+        let manifest = serde_json::json!({"schema":"plate-box-dataset/v1", "video_id":clip_id, "source_name":source_name, "raw_video":"byte-for-byte copy of the original trimmed clip", "video_file":output_video_for_worker, "meta":meta, "settings":settings, "review_revision":revision});
+        std::fs::write(temp_for_worker.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
+        Ok(())
+    }).await.map_err(ApiError::internal)?;
+    if let Err(error) = generated {
+        let _ = tokio::fs::remove_dir_all(&temp).await;
+        return Err(ApiError::internal(error));
+    }
+
+    let previous = root.join(format!(".{}.previous-{}", id, Uuid::new_v4()));
+    let had_previous = tokio::fs::try_exists(&destination)
+        .await
+        .map_err(ApiError::internal)?;
+    if had_previous {
+        tokio::fs::rename(&destination, &previous)
+            .await
+            .map_err(ApiError::internal)?;
+    }
+    if let Err(error) = tokio::fs::rename(&temp, &destination).await {
+        if had_previous {
+            let _ = tokio::fs::rename(&previous, &destination).await;
+        }
+        let _ = tokio::fs::remove_dir_all(&temp).await;
+        return Err(ApiError::internal(error));
+    }
+    if had_previous {
+        let _ = tokio::fs::remove_dir_all(previous).await;
+    }
+    sqlx::query("UPDATE box_clips SET reviewed_at_ms=? WHERE id=? AND revision=?")
+        .bind(now_ms())
+        .bind(&id)
+        .bind(revision)
+        .execute(&state.pool)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(DoneResult {
+        clip: detail(&state, &id).await?,
+        saved_to: format!("dataset-exports/{folder_name}"),
+    }))
+}
+
+fn safe_stem(name: &str, id: &str) -> String {
+    let stem = FsPath::new(name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("clip");
+    let safe: String = stem
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{}-{}", safe.trim_matches('_'), &id[..id.len().min(8)])
 }
 
 fn sha256(path: &FsPath) -> anyhow::Result<String> {

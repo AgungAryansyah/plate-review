@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { api, json } from "./api";
-import type { BoxClip, BoxClipDetail, BoxSettings, BoxTrack, Detection } from "./box-contracts";
+import type { BoxClip, BoxClipDetail, BoxDoneResult, BoxSettings, BoxTrack, Detection } from "./box-contracts";
 import "./BoxReview.css";
 
 function clock(ms: number) {
@@ -50,6 +50,7 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
   const [currentMs, setCurrentMs] = useState(0);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [doneMessage, setDoneMessage] = useState("");
   const [error, setError] = useState("");
   const [videoFailed, setVideoFailed] = useState(false);
   const [framePreview, setFramePreview] = useState(false);
@@ -221,7 +222,7 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
         tracks: tracks.map(({ id, selected, plate_text }) => ({ id, selected, plate_text })),
         settings,
       }));
-      setDetail(saved); setTracks(saved.tracks); setSettings(saved.settings); return true;
+      setDetail(saved); setTracks(saved.tracks); setSettings(saved.settings); setDoneMessage(""); await refreshClips(); return true;
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Review could not be saved"); return false; }
     finally { setSaving(false); }
   };
@@ -234,9 +235,20 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
     catch (reason) { setError(reason instanceof Error ? reason.message : "Segmentation could not start"); }
   };
 
-  const exportDataset = async () => {
-    if (!detail || !(await save())) return;
-    window.location.assign(`/api/boxes/clips/${encodeURIComponent(detail.clip.id)}/export`);
+  const markDone = async () => {
+    if (!detail) return;
+    setSaving(true); setError(""); setDoneMessage("");
+    try {
+      const result = await api<BoxDoneResult>(`/api/boxes/clips/${encodeURIComponent(detail.clip.id)}/done`, json("POST", {
+        expected_revision: detail.revision,
+        tracks: tracks.map(({ id, selected, plate_text }) => ({ id, selected, plate_text })),
+        settings,
+      }));
+      setDetail(result.clip); setTracks(result.clip.tracks); setSettings(result.clip.settings);
+      setDoneMessage(`Saved on this PC. Repeating Done replaces the prior files at ${result.saved_to}.`);
+      await refreshClips();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not finish this clip"); await loadDetail(detail.clip.id, true); await refreshClips(); }
+    finally { setSaving(false); }
   };
 
   const selectClip = (clip: BoxClip) => { setDetail(null); setCurrentMs(0); setPlaying(false); setVideoFailed(false); setFramePreview(false); setDecodedFrame(null); setShowBoxes(true); setZoom(1); setPan({ x: 0, y: 0 }); void loadDetail(clip.id); };
@@ -274,10 +286,10 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
       {loading && <p className="box-loading">Loading clip…</p>}
       {(() => {
         const shown = libraryView === "completed" ? clips.filter((clip) => clip.status === "complete") : clips;
-        return shown.length ? <div className="clip-grid">{shown.map((clip) => <article className="clip-card-wrap" key={clip.id}>{libraryView === "queue" && (clip.status === "unsegmented" || clip.status === "failed") && <input className="clip-select" type="checkbox" aria-label={`Select ${clip.name} for segmentation`} checked={selectedClipIds.has(clip.id)} disabled={!!batchProgress} onChange={() => toggleClipSelection(clip.id)} />}<button className="clip-card" onClick={() => selectClip(clip)}><span className={`clip-status ${clip.status}`}>{clip.status}</span><strong>{clip.name}</strong><span>{clock(clip.duration_ms)} <i>·</i> {size(clip.bytes)}</span>{clip.status === "running" || clip.status === "queued" ? <span className="clip-progress"><i style={{ width: `${Math.round(clip.progress * 100)}%` }} /></span> : null}{clip.error && <span className="clip-error">{clip.error}</span>}</button></article>)}</div> : !loading && <div className="box-empty"><span>{libraryView === "completed" ? "▧" : "◷"}</span><h3>{libraryView === "completed" ? "No completed clips yet" : "No clips in the queue"}</h3><p>{libraryView === "completed" ? "Segmentation results will appear here when they finish." : "Trimmed clips will appear here automatically after export."}</p></div>;
+        return shown.length ? <div className="clip-grid">{shown.map((clip) => { const displayState = clip.status === "complete" ? clip.review_state : clip.status; const displayLabel = displayState === "need_label" ? "Need label" : displayState; return <article className="clip-card-wrap" key={clip.id}>{libraryView === "queue" && (clip.status === "unsegmented" || clip.status === "failed") && <input className="clip-select" type="checkbox" aria-label={`Select ${clip.name} for segmentation`} checked={selectedClipIds.has(clip.id)} disabled={!!batchProgress} onChange={() => toggleClipSelection(clip.id)} />}<button className="clip-card" onClick={() => selectClip(clip)}><span className={`clip-status ${displayState}`}>{displayLabel}</span><strong>{clip.name}</strong><span>{clock(clip.duration_ms)} <i>·</i> {size(clip.bytes)}</span>{clip.status === "running" || clip.status === "queued" ? <span className="clip-progress"><i style={{ width: `${Math.round(clip.progress * 100)}%` }} /></span> : null}{clip.error && <span className="clip-error">{clip.error}</span>}</button></article>;})}</div> : !loading && <div className="box-empty"><span>{libraryView === "completed" ? "▧" : "◷"}</span><h3>{libraryView === "completed" ? "No completed clips yet" : "No clips in the queue"}</h3><p>{libraryView === "completed" ? "Segmentation results will appear here when they finish." : "Trimmed clips will appear here automatically after export."}</p></div>;
       })()}
     </section> : <>
-      <div className="box-detail-heading"><button className="back-button" onClick={() => { requestSeq.current++; setDetail(null); }}>←</button><div className="box-detail-title"><p className="eyebrow">TRIMMED CLIP</p><h2>{detail.clip.name}</h2><span>{clock(duration)} · {detail.meta.width} × {detail.meta.height} · {detail.meta.fps.toFixed(2)} fps · {detail.meta.frame_count.toLocaleString()} frames</span></div><span className={`clip-status ${detail.clip.status}`}>{detail.clip.status}</span></div>
+      <div className="box-detail-heading"><button className="back-button" onClick={() => { requestSeq.current++; setDetail(null); }}>←</button><div className="box-detail-title"><p className="eyebrow">TRIMMED CLIP</p><h2>{detail.clip.name}</h2><span>{clock(duration)} · {detail.meta.width} × {detail.meta.height} · {detail.meta.fps.toFixed(2)} fps · {detail.meta.frame_count.toLocaleString()} frames</span></div><span className={`clip-status ${detail.clip.status === "complete" ? detail.clip.review_state : detail.clip.status}`}>{detail.clip.status === "complete" ? (detail.clip.review_state === "need_label" ? "Need label" : "Complete") : detail.clip.status}</span></div>
       {activeJob && <section className="box-job" aria-live="polite"><div className="job-title"><strong>{activeJob.phase || activeJob.status}</strong><span>{Math.round(activeJob.progress * 100)}%</span></div><div className="box-progress"><i style={{ width: `${Math.round(activeJob.progress * 100)}%` }} /></div>{activeJob.error && <p className="clip-error">{activeJob.error}</p>}<details open={jobIsActive}><summary>Segmentation log <span>{activeJob.logs.length} lines</span></summary><pre>{activeJob.logs.length ? activeJob.logs.join("\n") : jobIsActive ? "Waiting for worker output…" : "No worker output recorded."}</pre></details></section>}
       <div className="box-layout"><section className="box-viewer"><div className="box-viewer-toolbar"><div><span className="live-dot" /> RAW SOURCE <span>·</span> {detail.clip.name}</div><div className="box-zoom-controls"><button aria-label="Zoom out" disabled={zoom <= 1} onClick={() => setZoomAt(zoom / 1.25)}>−</button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" disabled={zoom >= 8} onClick={() => setZoomAt(zoom * 1.25)}>+</button><button onClick={() => setZoomAt(1)}>Reset</button></div><span>{clock(currentMs)} / {clock(duration)}</span></div><div className={`box-stage ${zoom > 1 ? "zoomed" : ""}`} ref={stageRef} onPointerDown={onStagePointerDown} onPointerMove={onStagePointerMove} onPointerUp={onStagePointerUp} onPointerCancel={onStagePointerUp}>
         <video ref={videoRef} className={showDecodedFrame ? "box-video-hidden" : ""} src={`/api/boxes/clips/${encodeURIComponent(detail.clip.id)}/stream`} preload="metadata" playsInline onTimeUpdate={(event) => setCurrentMs(event.currentTarget.currentTime * 1000)} onPlay={() => { if (!framePreview && !videoFailed) setPlaying(true); }} onPause={() => { if (!framePreview && !videoFailed) setPlaying(false); }} onError={() => setVideoFailed(true)} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />
@@ -297,7 +309,7 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
           <label>Maximum size ratio <output>{settings.max_size_ratio.toFixed(1)}×</output><input disabled={jobIsActive} aria-label="Maximum size ratio" type="range" min="1" max="10" step="0.1" value={settings.max_size_ratio} onChange={(event) => updateSetting("max_size_ratio", Number(event.target.value))} /><small>Drop boxes much larger or smaller than nearby median width or height.</small></label>
           <p className="box-hint">Boxes stay unchecked until you include a track. Plate text is entered manually.{jobIsActive && " Editing is paused while segmentation runs."}</p>
         </section>
-        <div className="box-actions"><button className="secondary-button" onClick={() => void save()} disabled={saving || jobIsActive}>{saving ? "Saving…" : "Save review"}</button><button className="primary-button" onClick={() => void segment()} disabled={jobIsActive || detail.clip.status === "complete"}>{jobIsActive ? "Segmentation running" : detail.clip.status === "complete" ? "Segmentation complete" : "Segment plates"}</button><button className="export-dataset" onClick={() => void exportDataset()} disabled={saving || jobIsActive || detail.clip.status !== "complete"}>Export dataset ↓</button></div>
+        <div className="box-actions"><button className="secondary-button" onClick={() => void save()} disabled={saving || jobIsActive}>{saving ? "Saving…" : "Save review"}</button><button className="primary-button" onClick={() => void segment()} disabled={jobIsActive || detail.clip.status === "complete"}>{jobIsActive ? "Segmentation running" : detail.clip.status === "complete" ? "Segmentation complete" : "Segment plates"}</button><button className="export-dataset" onClick={() => void markDone()} disabled={saving || jobIsActive || detail.clip.status !== "complete"}>{saving ? "Saving…" : detail.clip.review_state === "complete" ? "Done · overwrite saved version" : "Done"}</button>{doneMessage && <p className="done-message" role="status">{doneMessage}</p>}</div>
       </aside></div>
     </>}
   </main>;

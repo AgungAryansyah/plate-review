@@ -10,6 +10,12 @@ export interface BoxClip {
   status: BoxClipStatus;
   progress: number;
   error: string | null;
+  review_state: "need_label" | "complete";
+}
+
+export interface BoxDoneResult {
+  clip: BoxClipDetail;
+  saved_to: string;
 }
 
 export interface Detection {
