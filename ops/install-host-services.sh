@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+cd "$(dirname "$0")/.."
+set -a
+source .env
+set +a
+plate_data=${PLATE_REVIEW_BOX_HOST:-$HOME/plate-review-data}
 mkdir -p "$HOME/.config/systemd/user"
 cat >"$HOME/.config/systemd/user/plate-sam-bridge.service" <<UNIT
 [Unit]
@@ -7,7 +12,7 @@ Description=Plate Review L40 SAM queue bridge
 After=network-online.target
 [Service]
 WorkingDirectory=$HOME/plate-review
-ExecStart=/usr/bin/python3 $HOME/plate-review/ops/sam/bridge.py --queue /mnt/data/plate-box-review/sam-jobs --exports /mnt/data/plate-number-trimmed/review
+ExecStart=/usr/bin/python3 $HOME/plate-review/ops/sam/bridge.py --queue $plate_data/sam-jobs --exports /mnt/data/plate-number-trimmed/review
 Restart=on-failure
 RestartSec=10
 UMask=0002

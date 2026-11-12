@@ -2,11 +2,15 @@
 # Run from faris's host checkout. Successful main-branch CI is the deployment gate.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-exec 9>/mnt/data/plate-box-review/deploy.lock
+set -a
+source .env
+set +a
+plate_data=${PLATE_REVIEW_BOX_HOST:-$HOME/plate-review-data}
+exec 9>"$plate_data/deploy.lock"
 flock -n 9 || exit 0
 git fetch --quiet origin main
 revision=$(git rev-parse origin/main)
-if [[ -f /mnt/data/plate-box-review/deployed-commit ]] && [[ $(cat /mnt/data/plate-box-review/deployed-commit) == "$revision" ]]; then
+if [[ -f "$plate_data/deployed-commit" ]] && [[ $(cat "$plate_data/deployed-commit") == "$revision" ]]; then
   exit 0
 fi
 python3 - "$revision" <<'PY'
@@ -27,7 +31,7 @@ git checkout --quiet --detach "$revision"
 docker compose --project-name plate-review --env-file .env build
 old_image=$(docker inspect plate-review-plate-review-1 --format '{{.Image}}')
 docker tag "$old_image" plate-review-rollback:latest
-backup=/mnt/data/plate-box-review/backups/$(date -u +%Y%m%dT%H%M%SZ)
+backup=$plate_data/backups/$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$backup"
 # Capture the SQLite database and WAL together while only this app is stopped.
 docker stop --time 30 plate-review-plate-review-1 >/dev/null
@@ -45,6 +49,6 @@ if [[ "$healthy" != true ]]; then
   echo 'New version failed health check; restored previous image.'
   exit 1
 fi
-printf '%s\n' "$revision" >/mnt/data/plate-box-review/deployed-commit
+printf '%s\n' "$revision" >"$plate_data/deployed-commit"
 systemctl --user try-restart plate-sam-bridge.service
 echo "Deployed $revision"

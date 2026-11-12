@@ -4,7 +4,7 @@ The existing Plate Review service remains on port 8080 with its existing account
 
 ## SAM bridge
 
-The web container uses a group-writable spool at `/data/boxes/sam-jobs`, backed by `/mnt/data/plate-box-review/sam-jobs` on labkc2-amd. `plate-sam-bridge.service` runs as the existing `faris` host user. It transfers source clips and checksummed manifests to `pityudhistira28@gpu-labkc.ub.ac.id:1004`, below `~/faris/plate-review-worker`, through SSH. Existing host SSH access remains outside the web container.
+The web container uses a group-writable spool at `/data/boxes/sam-jobs`, backed by `/home/faris/plate-review-data/sam-jobs` on labkc2-amd. `plate-sam-bridge.service` runs as the existing `faris` host user. It transfers source clips and checksummed manifests to `pityudhistira28@gpu-labkc.ub.ac.id:1004`, below `~/faris/plate-review-worker`, through SSH. Existing host SSH access remains outside the web container.
 
 Each remote inference process loads the existing SAM 3.1 checkpoint, processes every original frame, derives boxes from masks, records original frame timestamps, releases the model, and exits. No OCR runs. The process has a 30 decimal GB GPU guard, four GB of free VRAM headroom, a host RAM startup estimate based on the clip length, and two GB of host RAM headroom. Logs and progress are persisted for the UI. Remote PID records let the bridge reconnect without starting duplicate inference. A `PAUSED` file in either the host spool or the remote worker directory prevents new work.
 
@@ -12,7 +12,7 @@ Host service command:
 
 ```sh
 python3 /home/faris/plate-review/ops/sam/bridge.py \
-  --queue /mnt/data/plate-box-review/sam-jobs \
+  --queue /home/faris/plate-review-data/sam-jobs \
   --exports /mnt/data/plate-number-trimmed/review
 ```
 
