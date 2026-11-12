@@ -36,7 +36,15 @@ def ram_available():
     return int(next(l.split()[1] for l in Path('/proc/meminfo').read_text().splitlines() if l.startswith('MemAvailable:'))) * 1024
 
 
-def choose_gpu():
+def batch_for_budget(effective, ceiling=4):
+    # Conservative starting profiles; both detector and mask postprocessing are bounded.
+    for batch, required in ((4, 24_000_000_000), (2, 18_000_000_000), (1, 14_000_000_000)):
+        if batch <= ceiling and effective >= required:
+            return batch
+    return None
+
+
+def choose_gpu(ceiling=4):
     out = subprocess.check_output(['nvidia-smi', '--query-gpu=index,memory.free,memory.total,utilization.gpu', '--format=csv,noheader,nounits'], text=True)
     choices = []
     for line in out.splitlines():
@@ -44,9 +52,20 @@ def choose_gpu():
         free *= 1024 ** 2
         total *= 1024 ** 2
         effective = min(30_000_000_000, free - 4_000_000_000)
-        if effective >= 18_000_000_000:
-            choices.append((utilization, -free, index, (effective - 2_000_000_000) / total))
+        batch = batch_for_budget(effective, ceiling)
+        if batch is not None:
+            choices.append((utilization, -free, index, (effective - 2_000_000_000) / total, batch, effective, free))
     return min(choices)[2:] if choices else None
+
+
+def configure_batches(predictor, batch):
+    if batch not in (1, 2, 4):
+        raise ValueError('Invalid SAM batch profile')
+    engine = predictor.model
+    for key in ('batched_grounding_batch_size', 'postprocess_batch_size'):
+        if not hasattr(engine, key):
+            raise RuntimeError(f'Installed SAM model is missing its {key} resource control')
+        setattr(engine, key, batch)
 
 
 def main():
@@ -56,7 +75,9 @@ def main():
     root = args.job_dir.resolve()
     request = json.loads((root / 'request.json').read_text())
     job_id = request['job_id']
-    status = {'id': job_id, 'status': 'running', 'progress': 0., 'phase': 'starting', 'logs': [], 'error': None, 'pid': os.getpid()}
+    runtime = json.loads((root / 'runtime.json').read_text()) if (root / 'runtime.json').exists() else {}
+    ceiling = runtime.get('batch_ceiling', 4)
+    status = {'id': job_id, 'status': 'running', 'progress': 0., 'phase': 'starting', 'logs': runtime.get('logs', []), 'error': None, 'pid': os.getpid(), 'attempt': runtime.get('attempt', 1)}
     def update(phase, progress=None, message=None, state=None, error=None):
         status['phase'] = phase
         if progress is not None:
@@ -83,17 +104,18 @@ def main():
         required_ram = max(10_000_000_000, int(meta['frame_count'] * 1008 * 1008 * 3 * 4 * 1.15 + 4_000_000_000))
         while True:
             paused = (root.parent.parent / 'PAUSED').exists()
-            gpu = choose_gpu()
+            gpu = choose_gpu(ceiling)
             available = ram_available()
             if not paused and gpu is not None and available >= required_ram:
                 break
-            reason = 'Paused' if paused else f'Waiting for resources: RAM {available / 1e9:.1f}/{required_ram / 1e9:.1f} GB; GPU requires 18 GB plus 4 GB headroom'
+            reason = 'Paused' if paused else f'Waiting for resources: RAM {available / 1e9:.1f}/{required_ram / 1e9:.1f} GB; GPU requires at least 14 GB plus 4 GB headroom'
             update('resource_wait', .02, reason)
             time.sleep(30)
-        index, fraction = gpu
+        index, fraction, batch, effective, free = gpu
+        status.update(batch_size=batch, effective_budget_gb=round(effective / 1e9, 2), free_vram_before_load_gb=round(free / 1e9, 2))
         os.environ['CUDA_VISIBLE_DEVICES'] = str(index)
         os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
-        update('loading_model', .03, f'Loading SAM 3.1 on L40 GPU {index}; process budget <=30 decimal GB. Model unloads after this job.')
+        update('loading_model', .03, f'GPU {index}: {free / 1e9:.1f} GB free before loading; effective budget {effective / 1e9:.1f} GB, 4 GB free headroom, batch {batch}. Loading SAM 3.1; model unloads after this job.')
         import cv2
         import numpy as np
         import torch
@@ -127,6 +149,7 @@ def main():
         if len(timestamps) != meta['frame_count']:
             raise RuntimeError(f'Source frame-count mismatch: probe {len(timestamps)}, expected {meta["frame_count"]}')
         model = build_sam3_multiplex_video_predictor(checkpoint_path=str(checkpoint), max_num_objects=64, multiplex_count=16, use_fa3=False, use_rope_real=True, compile=False, warm_up=False, async_loading_frames=True, default_output_prob_thresh=.25)
+        configure_batches(model, batch)
         session = None
         tracks = {}
         coverage = set()
@@ -173,11 +196,13 @@ def main():
             stop_watchdog.set()
         if len(coverage) != len(timestamps):
             raise RuntimeError(f'Incomplete timeline: {len(coverage)}/{len(timestamps)} frames')
-        proposals = {'schema': 'plate-box-proposals/v1', 'source_sha256': request['source_sha256'], 'processed_frames': len(coverage), 'meta': meta,
+        proposals = {'schema': 'plate-box-proposals/v1', 'source_sha256': request['source_sha256'], 'processed_frames': len(coverage), 'meta': meta, 'processing': {'batch_size': batch, 'effective_budget_gb': effective / 1e9, 'attempt': status['attempt']},
                      'tracks': [{'id': key, 'selected': False, 'plate_text': '', 'detections': sorted(ds, key=lambda d:d['frame'])} for key, ds in sorted(tracks.items(), key=lambda kv:int(kv[0]))]}
         atomic(root / 'proposals.json', proposals)
         update('complete', 1., f'Complete: {len(tracks)} tracks, {sum(len(v) for v in tracks.values())} box frames. SAM unloaded. No OCR was run.', state='complete')
     except BaseException as exc:
+        if type(exc).__name__ in ('OutOfMemoryError', 'CudaOutOfMemoryError') or 'CUDA out of memory' in str(exc):
+            status['error_kind'] = 'cuda_oom'
         update('failed', state='failed', error=str(exc), message=str(exc))
         traceback.print_exc()
         raise
