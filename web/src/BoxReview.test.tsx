@@ -11,12 +11,13 @@ describe("Plate boxes", () => {
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
   it("starts with clip selection and does not load video or segment until requested", async () => {
+    const initialDetail = { ...detail, clip: { ...clip, status: "unsegmented" } };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/api/boxes/clips") return response([clip]);
-      if (path === "/api/boxes/clips/clip-1") return response(detail);
+      if (path === "/api/boxes/clips/clip-1") return response(initialDetail);
       if (path.endsWith("/segment")) return response({ status: "queued", progress: 0, phase: "queued", logs: [], error: null });
-      if (path.endsWith("/review") && init?.method === "PUT") return response(detail);
+      if (path.endsWith("/review") && init?.method === "PUT") return response(initialDetail);
       return response({});
     });
     vi.stubGlobal("fetch", fetchMock);
