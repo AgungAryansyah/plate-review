@@ -27,14 +27,31 @@ if not ci or ci[0]['conclusion']!='success':
 PY
 # Refuse to discard any tracked edits in the deployment checkout.
 [[ -z $(git status --porcelain --untracked-files=no) ]] || { echo 'Deployment checkout has tracked changes'; exit 1; }
-git checkout --quiet --detach "$revision"
-docker compose --project-name plate-review --env-file .env build
+if [[ $(git rev-parse HEAD) != "$revision" ]]; then
+  git checkout --quiet --detach "$revision"
+  exec "$PWD/ops/deploy.sh"
+fi
 old_image=$(docker inspect plate-review-plate-review-1 --format '{{.Image}}')
-docker tag "$old_image" plate-review-rollback:latest
+if docker image inspect "$old_image" >/dev/null 2>&1; then
+  docker tag "$old_image" plate-review-rollback:latest
+else
+  docker commit --pause=true plate-review-plate-review-1 plate-review-rollback:latest >/dev/null
+fi
+# Retain the rollback image before the build moves the latest tag.
+docker compose --project-name plate-review --env-file .env build
+app_stopped=false
+restore_previous() {
+  if [[ "$app_stopped" == true ]]; then
+    docker tag plate-review-rollback:latest plate-review-plate-review:latest
+    docker compose --project-name plate-review --env-file .env up -d --no-build --force-recreate
+  fi
+}
+trap 'result=$?; echo "Deployment failed at line $LINENO"; restore_previous; exit "$result"' ERR
 backup=$plate_data/backups/$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$backup"
 # Capture the SQLite database and WAL together while only this app is stopped.
 docker stop --time 30 plate-review-plate-review-1 >/dev/null
+app_stopped=true
 docker cp plate-review-plate-review-1:/app/state "$backup/state"
 docker compose --project-name plate-review --env-file .env up -d --no-build
 healthy=false
@@ -44,11 +61,10 @@ for attempt in $(seq 1 30); do
 done
 if [[ "$healthy" != true ]]; then
   docker logs --tail 100 plate-review-plate-review-1
-  docker tag plate-review-rollback:latest plate-review-plate-review:latest
-  docker compose --project-name plate-review --env-file .env up -d --no-build --force-recreate
-  echo 'New version failed health check; restored previous image.'
-  exit 1
+  echo 'New version failed health check; restoring previous image.'
+  false
 fi
+app_stopped=false
 printf '%s\n' "$revision" >"$plate_data/deployed-commit"
 systemctl --user try-restart plate-sam-bridge.service
 echo "Deployed $revision"

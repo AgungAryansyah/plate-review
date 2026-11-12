@@ -89,6 +89,11 @@ def main():
                         run(scp + [f'{args.remote}:{remote_dir}/engine.log', str(directory/'engine.log')], timeout=120)
                         # Complete is committed only after the result is locally durable.
                         atomic(status_path, remote_status)
+                        # The original remains on the source host; only discard our verified staging copy.
+                        try:
+                            run(ssh + [f"rm -f -- {shlex.quote(remote_dir)}/source.mp4"])
+                        except Exception:
+                            pass
                         break
                     atomic(status_path, remote_status)
                     if remote_status.get('status') == 'failed':
