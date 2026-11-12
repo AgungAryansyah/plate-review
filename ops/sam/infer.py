@@ -111,8 +111,14 @@ def main():
                 except Exception:
                     pass
         threading.Thread(target=watchdog, daemon=True).start()
-        probe = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', str(source)]))
-        timestamps = [float(f['best_effort_timestamp_time']) for f in probe['frames']]
+        # PyAV ships its decoder libraries; no system ffprobe binary is required.
+        import av
+        with av.open(str(source)) as container:
+            timestamps = []
+            for frame in container.decode(video=0):
+                if frame.pts is None or frame.time_base is None:
+                    raise RuntimeError('Source frame is missing its presentation timestamp')
+                timestamps.append(float(frame.pts * frame.time_base))
         if not timestamps:
             raise RuntimeError('No source frame timestamps were found')
         first = timestamps[0]

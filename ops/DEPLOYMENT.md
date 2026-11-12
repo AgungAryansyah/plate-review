@@ -1,6 +1,6 @@
 # Plate boxes deployment
 
-The existing Plate Review service remains on port 8080 with its existing accounts, source mount, exports mount, and database volume. The new **Plate boxes** view lists all completed exported clips before opening candidates. Clip discovery never loads a GPU model; **Segment plates** creates a durable job on explicit request.
+The existing Plate Review service remains on port 8080 with its existing accounts, source mount, exports mount, and database volume. The new **Plate boxes** view shows segmented clips before opening candidates. Exported clips are discovered every 30 seconds and automatically queued for serial L40 segmentation. The separate queue view supports single-clip and selected/all retries. Failed jobs require explicit retry. Clip discovery never loads a GPU model; only an admitted worker does. `PLATE_REVIEW_AUTO_SEGMENT=false` disables automatic admission, and the spool `PAUSED` marker prevents processing.
 
 ## SAM bridge
 
@@ -16,7 +16,7 @@ python3 /home/faris/plate-review/ops/sam/bridge.py \
   --exports /mnt/data/plate-number-trimmed/review
 ```
 
-The bridge expects the previously installed remote environment at `~/faris/plate-sam-camera92/venv/bin/python` and checkpoint at `~/faris/plate-sam-camera92/models/sam3.1_multiplex.pt`. These paths are not included in the Docker image.
+The bridge expects the previously installed remote environment at `~/faris/plate-sam-camera92/venv/bin/python` and checkpoint at `~/faris/plate-sam-camera92/models/sam3.1_multiplex.pt`. These paths are not included in the Docker image. The remote environment requires `av==16.0.1` for original presentation timestamps without a system ffprobe dependency. Install with `~/.local/bin/uv pip install --python ~/faris/plate-sam-camera92/venv/bin/python av==16.0.1`.
 
 ## Export format
 

@@ -504,9 +504,15 @@ pub async fn segment(
     Path(id): Path<String>,
 ) -> Result<Json<Job>, ApiError> {
     sync_jobs(&state).await?;
-    if let Some(job) = latest_job(&state, &id).await? {
+    Ok(Json(queue_clip(&state, &id, &user.id).await?))
+}
+
+async fn queue_clip(state: &AppState, id: &str, requested_by: &str) -> Result<Job, ApiError> {
+    static ADMISSION: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = ADMISSION.get_or_init(|| Mutex::new(())).lock().await;
+    if let Some(job) = latest_job(state, id).await? {
         if matches!(job.status.as_str(), "queued" | "running" | "complete") {
-            return Ok(Json(job));
+            return Ok(job);
         }
     }
     let d = detail(&state, &id).await?;
@@ -534,7 +540,7 @@ pub async fn segment(
             .map_err(ApiError::internal)?;
     }
     let mut tx = state.pool.begin().await.map_err(ApiError::internal)?;
-    sqlx::query("INSERT INTO box_jobs(id,clip_id,requested_by,status,source_hash,created_at_ms) VALUES(?,?,?,'queued',?,?)").bind(&job_id).bind(&id).bind(&user.id).bind(&source_hash).bind(now_ms()).execute(&mut *tx).await.map_err(|e|ApiError::conflict(format!("Cannot queue clip: {e}")))?;
+    sqlx::query("INSERT INTO box_jobs(id,clip_id,requested_by,status,source_hash,created_at_ms) VALUES(?,?,?,'queued',?,?)").bind(&job_id).bind(id).bind(requested_by).bind(&source_hash).bind(now_ms()).execute(&mut *tx).await.map_err(|e|ApiError::conflict(format!("Cannot queue clip: {e}")))?;
     sqlx::query("UPDATE box_clips SET source_hash=? WHERE id=?")
         .bind(&source_hash)
         .bind(&id)
@@ -547,11 +553,9 @@ pub async fn segment(
     tokio::fs::write(dir.join("READY"), b"")
         .await
         .map_err(ApiError::internal)?;
-    Ok(Json(
-        latest_job(&state, &id)
-            .await?
-            .ok_or_else(|| ApiError::bad("Job was not queued"))?,
-    ))
+    latest_job(state, id)
+        .await?
+        .ok_or_else(|| ApiError::bad("Job was not queued"))
 }
 
 async fn sync_jobs(state: &AppState) -> Result<(), ApiError> {
@@ -665,10 +669,41 @@ fn validate_proposal(p: &Proposal, hash: &str) -> Result<(), String> {
     Ok(())
 }
 
+async fn admit_new_clips(state: &AppState) -> Result<(), ApiError> {
+    if queue_root(state).join("PAUSED").exists()
+        || std::env::var("PLATE_REVIEW_AUTO_SEGMENT").is_ok_and(|v| v == "false")
+    {
+        return Ok(());
+    }
+    // Admit one clip at a time; this bounds CPU probing/hashing without loading SAM.
+    // Failed jobs require an explicit retry and are never silently looped forever.
+    let next = sqlx::query("SELECT c.id,e.requested_by FROM box_clips c JOIN export_jobs e ON e.id=c.export_job_id WHERE NOT EXISTS (SELECT 1 FROM box_jobs j WHERE j.clip_id=c.id) ORDER BY c.created_at_ms,c.name LIMIT 1")
+        .fetch_optional(&state.pool).await.map_err(ApiError::internal)?;
+    if let Some(row) = next {
+        queue_clip(
+            state,
+            &row.get::<String, _>("id"),
+            &row.get::<String, _>("requested_by"),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 pub async fn worker(state: AppState) {
+    let mut discovery_tick = 0;
     loop {
+        if discovery_tick == 0 {
+            if let Err(e) = discover(&state).await {
+                tracing::error!(error=%e.message,"Clip discovery failed");
+            }
+        }
+        discovery_tick = (discovery_tick + 1) % 15;
         if let Err(e) = sync_jobs(&state).await {
             tracing::error!(error=%e.message,"SAM status synchronization failed");
+        }
+        if let Err(e) = admit_new_clips(&state).await {
+            tracing::error!(error=%e.message,"Automatic SAM admission failed");
         }
         sleep(Duration::from_secs(2)).await;
     }
@@ -930,6 +965,33 @@ mod tests {
             },
             login_limiter: crate::auth::LoginLimiter::default(),
         };
+        // Automatic admission is idempotent and respects the same durable queue as manual jobs.
+        sqlx::query("INSERT INTO users(id,username,password_hash,role,created_at_ms) VALUES('owner','owner','unused','reviewer',0)").execute(&state.pool).await.unwrap();
+        sqlx::query("INSERT INTO export_jobs(id,requested_by,status,total_items,created_at_ms) VALUES('export','owner','complete',1,0)").execute(&state.pool).await.unwrap();
+        admit_new_clips(&state).await.unwrap();
+        admit_new_clips(&state).await.unwrap();
+        let job = latest_job(&state, "clip").await.unwrap().unwrap();
+        assert!(queue_root(&state).join(&job.id).join("READY").exists());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM box_jobs")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap(),
+            1
+        );
+        // A failed job is retained for explicit retry rather than repeatedly auto-admitted.
+        sqlx::query("UPDATE box_jobs SET status='failed'")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        admit_new_clips(&state).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM box_jobs")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap(),
+            1
+        );
         let response = export(
             State(state),
             Extension(UserView {
