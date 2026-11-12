@@ -21,6 +21,26 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{api::AppState, auth::LoginLimiter, config::Settings};
 
+// Always revalidate the shell so a deployment cannot strand reviewers on old JS.
+async fn revalidate_html(
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    if response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"))
+    {
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-cache"),
+        );
+    }
+    response
+}
+
 #[derive(Parser)]
 #[command(name = "plate-review", version)]
 struct Cli {
@@ -176,6 +196,7 @@ async fn serve() -> Result<()> {
             state.clone(),
             auth::check_origin,
         ))
+        .layer(middleware::from_fn(revalidate_html))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
     tokio::spawn(exports::worker(state.clone()));

@@ -116,4 +116,30 @@ describe("Plate boxes", () => {
     expect(screen.getByRole("img", { name: "Detected plate boxes" })).toHaveStyle({ transform: "translate(0px, 0px) scale(1.25)" });
     expect(screen.getByRole("img", { name: /Decoded source frame/ })).toHaveStyle({ transform: "translate(0px, 0px) scale(1.25)" });
   });
+
+  it("selects a box on captured pointer click, but keeps selection while dragging to pan", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    const otherTrack = { ...detail.tracks[0], id: "box-02", detections: detail.tracks[0].detections.map((detection) => ({ ...detection, x_min: 300, x_max: 420 })) };
+    const twoTrackDetail = { ...detail, tracks: [...detail.tracks, otherTrack] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/boxes/clips" ? response([clip]) : response(twoTrackDetail));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    const { container } = render(<BoxReview onBack={() => undefined} />);
+    await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
+    await user.click(screen.getByRole("button", { name: "Zoom in" }));
+
+    const stage = container.querySelector(".box-stage") as HTMLDivElement;
+    Object.defineProperty(stage, "setPointerCapture", { value: vi.fn() });
+    const [first, second] = screen.getByRole("img", { name: "Detected plate boxes" }).querySelectorAll("g");
+    fireEvent.pointerDown(second, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(stage, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    expect(second).toHaveClass("box-active");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 2, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(stage, { button: 0, pointerId: 2, clientX: 125, clientY: 110 });
+    fireEvent.pointerUp(stage, { button: 0, pointerId: 2, clientX: 125, clientY: 110 });
+    expect(second).toHaveClass("box-active");
+    expect(screen.getByRole("img", { name: "Detected plate boxes" })).toHaveStyle({ transform: "translate(25px, 10px) scale(1.25)" });
+    expect(screen.getByRole("img", { name: /Decoded source frame/ })).toHaveAttribute("draggable", "false");
+  });
 });

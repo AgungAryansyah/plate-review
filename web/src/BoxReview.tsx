@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { api, json } from "./api";
 import type { BoxClip, BoxClipDetail, BoxSettings, BoxTrack, Detection } from "./box-contracts";
 import "./BoxReview.css";
@@ -57,7 +57,7 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
   const framePreviewTime = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const panOrigin = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const panOrigin = useRef<{ x: number; y: number; panX: number; panY: number; trackId: string | null } | null>(null);
   const didPan = useRef(false);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -102,15 +102,13 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
     setPan((current) => ({ x: x - ratio * (x - current.x), y: y - ratio * (y - current.y) }));
     setZoom(next);
   };
-  const onStageWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const rect = event.currentTarget.getBoundingClientRect();
-    setZoomAt(zoom * (event.deltaY < 0 ? 1.12 : 1 / 1.12), event.clientX - rect.left - rect.width / 2, event.clientY - rect.top - rect.height / 2);
-  };
   const onStagePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (zoom <= 1 || event.button !== 0) return;
-    panOrigin.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
+    const pointerButton = (event as ReactPointerEvent<HTMLDivElement> & { button?: number }).button;
+    if (zoom <= 1 || (pointerButton !== undefined && pointerButton !== 0)) return;
+    const trackGroup = (event.target as Element).closest<SVGGElement>("[data-track-id]");
+    panOrigin.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y, trackId: trackGroup?.dataset.trackId ?? null };
     didPan.current = false;
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const onStagePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -120,7 +118,24 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
     if (Math.abs(dx) + Math.abs(dy) > 4) didPan.current = true;
     setPan({ x: origin.panX + dx, y: origin.panY + dy });
   };
-  const onStagePointerUp = () => { panOrigin.current = null; if (didPan.current) window.setTimeout(() => { didPan.current = false; }, 120); };
+  const onStagePointerUp = () => {
+    const origin = panOrigin.current;
+    panOrigin.current = null;
+    if (origin && !didPan.current && origin.trackId) setSelectedTrack(origin.trackId);
+    if (didPan.current) window.setTimeout(() => { didPan.current = false; }, 120);
+  };
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = stage.getBoundingClientRect();
+      setZoomAt(zoom * (event.deltaY < 0 ? 1.12 : 1 / 1.12), event.clientX - rect.left - rect.width / 2, event.clientY - rect.top - rect.height / 2);
+    };
+    stage.addEventListener("wheel", handleWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", handleWheel);
+  }, [setZoomAt, zoom]);
 
   const loadDetail = useCallback(async (id: string, quiet = false) => {
     const seq = ++requestSeq.current;
@@ -237,11 +252,11 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
     </section> : <>
       <div className="box-detail-heading"><button className="back-button" onClick={() => { requestSeq.current++; setDetail(null); }}>←</button><div className="box-detail-title"><p className="eyebrow">TRIMMED CLIP</p><h2>{detail.clip.name}</h2><span>{clock(duration)} · {detail.meta.width} × {detail.meta.height} · {detail.meta.fps.toFixed(2)} fps · {detail.meta.frame_count.toLocaleString()} frames</span></div><span className={`clip-status ${detail.clip.status}`}>{detail.clip.status}</span></div>
       {activeJob && <section className="box-job" aria-live="polite"><div className="job-title"><strong>{activeJob.phase || activeJob.status}</strong><span>{Math.round(activeJob.progress * 100)}%</span></div><div className="box-progress"><i style={{ width: `${Math.round(activeJob.progress * 100)}%` }} /></div>{activeJob.error && <p className="clip-error">{activeJob.error}</p>}<details open={jobIsActive}><summary>Segmentation log <span>{activeJob.logs.length} lines</span></summary><pre>{activeJob.logs.length ? activeJob.logs.join("\n") : jobIsActive ? "Waiting for worker output…" : "No worker output recorded."}</pre></details></section>}
-      <div className="box-layout"><section className="box-viewer"><div className="box-viewer-toolbar"><div><span className="live-dot" /> RAW SOURCE <span>·</span> {detail.clip.name}</div><div className="box-zoom-controls"><button aria-label="Zoom out" disabled={zoom <= 1} onClick={() => setZoomAt(zoom / 1.25)}>−</button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" disabled={zoom >= 8} onClick={() => setZoomAt(zoom * 1.25)}>+</button><button onClick={() => setZoomAt(1)}>Reset</button></div><span>{clock(currentMs)} / {clock(duration)}</span></div><div className={`box-stage ${zoom > 1 ? "zoomed" : ""}`} ref={stageRef} onWheel={onStageWheel} onPointerDown={onStagePointerDown} onPointerMove={onStagePointerMove} onPointerUp={onStagePointerUp} onPointerCancel={onStagePointerUp}>
+      <div className="box-layout"><section className="box-viewer"><div className="box-viewer-toolbar"><div><span className="live-dot" /> RAW SOURCE <span>·</span> {detail.clip.name}</div><div className="box-zoom-controls"><button aria-label="Zoom out" disabled={zoom <= 1} onClick={() => setZoomAt(zoom / 1.25)}>−</button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" disabled={zoom >= 8} onClick={() => setZoomAt(zoom * 1.25)}>+</button><button onClick={() => setZoomAt(1)}>Reset</button></div><span>{clock(currentMs)} / {clock(duration)}</span></div><div className={`box-stage ${zoom > 1 ? "zoomed" : ""}`} ref={stageRef} onPointerDown={onStagePointerDown} onPointerMove={onStagePointerMove} onPointerUp={onStagePointerUp} onPointerCancel={onStagePointerUp}>
         <video ref={videoRef} className={framePreview || videoFailed ? "box-video-hidden" : ""} src={`/api/boxes/clips/${encodeURIComponent(detail.clip.id)}/stream`} preload="metadata" playsInline onTimeUpdate={(event) => setCurrentMs(event.currentTarget.currentTime * 1000)} onPlay={() => { if (!framePreview) setPlaying(true); }} onPause={() => { if (!framePreview) setPlaying(false); }} onError={() => setVideoFailed(true)} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />
-        {(videoFailed || framePreview || !playing) && <div className="box-decoded-frame"><img src={frameUrl} alt={`Decoded source frame at ${clock(currentMs)}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />{(videoFailed || framePreview) && <span>{videoFailed ? "Video playback unavailable · showing decoded frame" : "Decoded frame preview · 5 frames per second"}</span>}</div>}
-        <svg className="box-overlay" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} viewBox={`0 0 ${detail.meta.width} ${detail.meta.height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label="Detected plate boxes">{visibleTracks.map((track) => { const detection = activeDetection(track); if (!detection) return null; const active = selectedTrack === track.id; return <g key={track.id} onClick={() => { if (!didPan.current) setSelectedTrack(track.id); }} className={active ? "box-active" : ""}><rect x={detection.x_min} y={detection.y_min} width={detection.x_max - detection.x_min} height={detection.y_max - detection.y_min} /><text x={detection.x_min} y={Math.max(16, detection.y_min - 7)}>{track.id} · {(detection.confidence * 100).toFixed(0)}%</text></g>; })}</svg>
-      </div><div className="box-transport"><button aria-label={playing ? "Pause clip" : "Play clip"} onClick={() => { if (framePreview || videoFailed) { setPlaying((value) => !value); return; } const video = videoRef.current; if (!video) return; if (video.paused) void video.play().catch(() => setVideoFailed(true)); else video.pause(); }}>{playing ? "Ⅱ" : "▶"}</button><input aria-label="Clip timeline" type="range" min="0" max={duration || 1} step="1" value={Math.min(currentMs, duration)} onChange={(event) => { const value = Number(event.target.value); setCurrentMs(value); if (videoRef.current) videoRef.current.currentTime = value / 1000; }} /><span>{clock(currentMs)}</span><button className="preview-toggle" onClick={() => { const next = !framePreview; if (next) { videoRef.current?.pause(); setPlaying(false); } else if (videoRef.current) videoRef.current.currentTime = currentMs / 1000; setFramePreview(next); }}>{framePreview ? "Video" : "Frame preview"}</button></div></section>
+        {(videoFailed || framePreview || !playing) && <div className="box-decoded-frame"><img draggable={false} onDragStart={(event) => event.preventDefault()} src={frameUrl} alt={`Decoded source frame at ${clock(currentMs)}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />{(videoFailed || framePreview) && <span>{videoFailed ? "Video playback unavailable · showing decoded frame" : "Decoded frame preview · 5 frames per second"}</span>}</div>}
+        <svg className="box-overlay" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} viewBox={`0 0 ${detail.meta.width} ${detail.meta.height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label="Detected plate boxes">{visibleTracks.map((track) => { const detection = activeDetection(track); if (!detection) return null; const active = selectedTrack === track.id; return <g key={track.id} data-track-id={track.id} onClick={() => { if (!didPan.current) setSelectedTrack(track.id); }} className={active ? "box-active" : ""}><rect x={detection.x_min} y={detection.y_min} width={detection.x_max - detection.x_min} height={detection.y_max - detection.y_min} /><text x={detection.x_min} y={Math.max(16, detection.y_min - 7)}>{track.id} · {(detection.confidence * 100).toFixed(0)}%</text></g>; })}</svg>
+      </div><div style={{ padding: "5px 10px", color: "#858b95", fontSize: 9 }}>Zoom in, then drag to pan. Click a box to select its track.</div><div className="box-transport"><button aria-label={playing ? "Pause clip" : "Play clip"} onClick={() => { if (framePreview || videoFailed) { setPlaying((value) => !value); return; } const video = videoRef.current; if (!video) return; if (video.paused) void video.play().catch(() => setVideoFailed(true)); else video.pause(); }}>{playing ? "Ⅱ" : "▶"}</button><input aria-label="Clip timeline" type="range" min="0" max={duration || 1} step="1" value={Math.min(currentMs, duration)} onChange={(event) => { const value = Number(event.target.value); setCurrentMs(value); if (videoRef.current) videoRef.current.currentTime = value / 1000; }} /><span>{clock(currentMs)}</span><button className="preview-toggle" onClick={() => { const next = !framePreview; if (next) { videoRef.current?.pause(); setPlaying(false); } else if (videoRef.current) videoRef.current.currentTime = currentMs / 1000; setFramePreview(next); }}>{framePreview ? "Video" : "Frame preview"}</button></div></section>
       <aside className="box-sidebar"><section className="box-panel"><div className="box-panel-title"><div><p className="eyebrow">TRACK REVIEW</p><h3>Plate candidates <span>{tracks.length}</span></h3></div><span className="box-small-note">No OCR</span></div>{tracks.length ? <div className="track-list">{tracks.map((track) => <div className={`track-row ${selectedTrack === track.id ? "focused" : ""}`} key={track.id} onClick={() => setSelectedTrack(track.id)}><label className="track-toggle" onClick={(event) => event.stopPropagation()}><input type="checkbox" disabled={jobIsActive} checked={track.selected} onChange={(event) => updateTrack(track.id, { selected: event.target.checked })} aria-label={`Include box ${track.id}`} /><span>{track.id}</span></label><input className="plate-entry" disabled={jobIsActive} aria-label={`Plate text for box ${track.id}`} placeholder="Enter plate text" value={track.plate_text} onChange={(event) => updateTrack(track.id, { plate_text: event.target.value })} /><small>{visibleTracks.find((item) => item.id === track.id)?.detections.length ?? 0} frames after filtering</small></div>)}</div> : <p className="box-hint">No tracks yet. Run segmentation to find plate candidates.</p>}</section>
         <section className="box-panel box-settings"><div className="box-panel-title"><div><p className="eyebrow">SEGMENTATION</p><h3>Run settings</h3></div></div><label>Minimum confidence <output>{settings.min_confidence.toFixed(2)}</output><input disabled={jobIsActive} aria-label="Minimum confidence" type="range" min="0" max="1" step="0.01" value={settings.min_confidence} onChange={(event) => updateSetting("min_confidence", Number(event.target.value))} /></label><label>Median jitter <span>px</span><input disabled={jobIsActive} aria-label="Median jitter" type="number" min="0" max="100" step="1" value={settings.jitter_px} onChange={(event) => updateSetting("jitter_px", Number(event.target.value))} /></label><label>Smoothing window <span>frames</span><input disabled={jobIsActive} aria-label="Smoothing window" type="number" min="0" max="30" step="1" value={settings.smoothing_radius} onChange={(event) => updateSetting("smoothing_radius", Number(event.target.value))} /></label><label>Minimum track length <span>frames</span><input disabled={jobIsActive} aria-label="Minimum frames" type="number" min="1" max="10000" step="1" value={settings.minimum_frames} onChange={(event) => updateSetting("minimum_frames", Number(event.target.value))} /></label><label>Maximum box area <output>{(settings.max_area_fraction * 100).toFixed(1)}%</output><input disabled={jobIsActive} aria-label="Maximum area fraction" type="range" min="0.001" max="0.25" step="0.001" value={settings.max_area_fraction} onChange={(event) => updateSetting("max_area_fraction", Number(event.target.value))} /></label><label>Maximum size ratio <output>{settings.max_size_ratio.toFixed(1)}×</output><input disabled={jobIsActive} aria-label="Maximum size ratio" type="range" min="1" max="10" step="0.1" value={settings.max_size_ratio} onChange={(event) => updateSetting("max_size_ratio", Number(event.target.value))} /></label><p className="box-hint">Boxes stay unchecked until you include a track. Plate text is entered manually.{jobIsActive && " Editing is paused while segmentation runs."}</p></section>
         <div className="box-actions"><button className="secondary-button" onClick={() => void save()} disabled={saving || jobIsActive}>{saving ? "Saving…" : "Save review"}</button><button className="primary-button" onClick={() => void segment()} disabled={jobIsActive || detail.clip.status === "complete"}>{jobIsActive ? "Segmentation running" : detail.clip.status === "complete" ? "Segmentation complete" : "Segment plates"}</button><button className="export-dataset" onClick={() => void exportDataset()} disabled={saving || jobIsActive || detail.clip.status !== "complete"}>Export dataset ↓</button></div>
