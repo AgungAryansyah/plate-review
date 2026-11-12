@@ -45,6 +45,7 @@ describe("sign-in and keyboard help", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(await screen.findByRole("heading", { name: "Recordings" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Export jobs/ }));
     expect(await screen.findByRole("link", { name: /camera-91_abc_clip_0-1000\.mp4/ })).toHaveAttribute("href", "/api/exports/job-1/files/camera-91_abc_clip_0-1000.mp4");
     expect(screen.getByRole("link", { name: "Download manifest" })).toHaveAttribute("href", "/api/exports/job-1/manifest");
     fireEvent.keyDown(window, { key: "?" });
