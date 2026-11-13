@@ -13,9 +13,9 @@
 .box-library-heading p:last-child { margin: 0; color: #858b95; font-size: 11px; }
 .box-count, .box-small-note { padding: 6px 9px; border: 1px solid #343841; border-radius: 20px; color: #959ba5; background: #1b1e24; font: 9px var(--mono); white-space: nowrap; }
 .box-library-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0 14px; }
-.box-library-tabs, .box-batch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
-.box-library-tabs button { min-height: 30px; padding: 0 10px; border: 1px solid #303640; border-radius: 6px; color: #9da3ad; background: #1a1d23; cursor: pointer; font-size: 10px; }
-.box-library-tabs button.active { border-color: #467b70; color: #b5e9dd; background: #1e302d; }
+.clip-filter, .box-batch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.clip-filter { color: #878d97; font-size: 10px; }
+.clip-filter select { min-height: 30px; padding: 0 28px 0 10px; border: 1px solid #343a43; border-radius: 7px; color: #c7cbd1; background: #1c1f25; cursor: pointer; font-size: 10px; }
 .box-batch-actions .primary-button, .box-batch-actions .secondary-button { min-height: 29px; font-size: 9px; }
 .box-batch-actions { justify-content: flex-end; }
 .batch-progress { position: relative; display: flex; justify-content: space-between; margin: 0 0 13px; padding: 9px 10px; overflow: hidden; border: 1px solid #303640; border-radius: 6px; color: #aeb4bb; background: #191c21; font-size: 9px; }
@@ -32,6 +32,7 @@
 .clip-status { padding: 4px 7px; border: 1px solid #343841; border-radius: 4px; color: #a3a8b0; background: #22252c; font: 8px var(--mono); text-transform: uppercase; }
 .clip-status.complete { border-color: #365d54; color: #8bd3c2; background: #1d2b28; }
 .clip-status.need_label { border-color: #695638; color: #e6c17e; background: #302919; }
+.clip-status.processing { border-color: #695638; color: #e6c17e; background: #302919; }
 .clip-status.running, .clip-status.queued { border-color: #695638; color: #e6c17e; background: #302919; }
 .clip-status.failed { border-color: #68403e; color: #ea9a94; background: #342121; }
 .clip-progress, .box-progress { display: block; width: 100%; height: 3px; overflow: hidden; border-radius: 3px; background: #30343c; }
