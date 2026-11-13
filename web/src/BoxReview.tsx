@@ -72,7 +72,7 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
   }, []);
 
   const queueableIds = clips.filter((clip) => clip.status === "unsegmented" || clip.status === "failed").map((clip) => clip.id);
-  const reviewState = (clip: BoxClip) => clip.status === "complete" ? clip.review_state : clip.status === "queued" || clip.status === "running" ? "processing" : clip.status;
+  const reviewState = (clip: BoxClip) => clip.status === "complete" ? clip.review_state ?? "need_label" : clip.status === "queued" || clip.status === "running" ? "processing" : clip.status;
   const filteredClips = clips.filter((clip) => statusFilter === "all" || reviewState(clip) === statusFilter);
   const runBatch = async (ids: string[]) => {
     if (!ids.length || batchProgress) return;

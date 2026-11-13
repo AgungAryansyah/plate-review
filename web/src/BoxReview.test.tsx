@@ -24,7 +24,7 @@ describe("Plate boxes", () => {
     const user = userEvent.setup();
     render(<BoxReview onBack={() => undefined} />);
 
-    expect(await screen.findByRole("heading", { name: "Choose a completed clip" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Plate clips" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ })).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalledWith("/api/boxes/clips/clip-1/stream", expect.anything());
     expect(fetchMock).not.toHaveBeenCalledWith("/api/boxes/clips/clip-1/segment", expect.anything());
@@ -51,7 +51,6 @@ describe("Plate boxes", () => {
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<BoxReview onBack={() => undefined} />);
-    await user.click(await screen.findByRole("button", { name: "Queue / all clips" }));
     await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
     expect(await screen.findByText("Tracking frames")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Plate text for box box-01" })).toBeDisabled();
@@ -64,9 +63,10 @@ describe("Plate boxes", () => {
     expect(await screen.findByText("Export ready")).toBeInTheDocument();
   });
 
-  it("separates completed clips from the queue and segments selected pending/failed clips sequentially", async () => {
+  it("filters every clip state and segments selected pending/failed clips sequentially", async () => {
     const queueClips = [
-      clip,
+      { ...clip, review_state: "need_label" as const },
+      { ...clip, id: "clip-done", name: "done.mp4", review_state: "complete" as const },
       { ...clip, id: "clip-pending", name: "pending.mp4", status: "unsegmented" as const, progress: 0 },
       { ...clip, id: "clip-failed", name: "failed.mp4", status: "failed" as const, progress: 0, error: "worker stopped" },
       { ...clip, id: "clip-running", name: "running.mp4", status: "running" as const, progress: 0.4 },
@@ -88,12 +88,27 @@ describe("Plate boxes", () => {
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<BoxReview onBack={() => undefined} />);
-    expect(await screen.findByRole("heading", { name: "Choose a completed clip" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Plate clips" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /drive-a-clip\.mp4/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /pending\.mp4/ })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Queue / all clips" }));
+    const filter = screen.getByRole("combobox", { name: "Filter clips by status" });
+    expect(screen.getByRole("option", { name: "All clips" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Complete" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Need label" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Failed" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Unsegmented" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Processing (queued / running)" })).toBeInTheDocument();
+    await user.selectOptions(filter, "complete");
+    expect(await screen.findByRole("button", { name: /done\.mp4/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /drive-a-clip\.mp4/ })).not.toBeInTheDocument();
+    await user.selectOptions(filter, "need_label");
+    expect(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ })).toBeInTheDocument();
+    await user.selectOptions(filter, "unsegmented");
     expect(await screen.findByRole("button", { name: /pending\.mp4/ })).toBeInTheDocument();
+    await user.selectOptions(filter, "failed");
+    expect(await screen.findByRole("button", { name: /failed\.mp4/ })).toBeInTheDocument();
+    await user.selectOptions(filter, "processing");
+    expect(await screen.findByRole("button", { name: /running\.mp4/ })).toBeInTheDocument();
+    await user.selectOptions(filter, "all");
     const pending = screen.getByRole("checkbox", { name: "Select pending.mp4 for segmentation" });
     const failed = screen.getByRole("checkbox", { name: "Select failed.mp4 for segmentation" });
     await user.click(pending);
