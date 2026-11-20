@@ -451,16 +451,51 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (boxMode || editableTarget(event.target)) return;
+      if (event.defaultPrevented) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        if (!boxMode && activeId) { event.preventDefault(); void flushRef.current(); }
+        return;
+      }
+      if (editableTarget(event.target)) return;
+      if (event.key === "?") { event.preventDefault(); setHelpOpen((value) => !value); return; }
+      if (event.key === "Escape") {
+        if (helpOpen) { event.preventDefault(); setHelpOpen(false); return; }
+        if (!boxMode && activeId) { event.preventDefault(); void releaseAndClose(); }
+        return;
+      }
+      if (boxMode) return;
       const video = videoRef.current;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); return; }
-      if (event.key === "?") { event.preventDefault(); setHelpOpen((value) => !value); return; }
       if (!activeId || !video) return;
       if (event.code === "Space" || event.key.toLowerCase() === "k") { event.preventDefault(); togglePlay(); return; }
       if (event.key.toLowerCase() === "i") { event.preventDefault(); markIn(); return; }
       if (event.key.toLowerCase() === "o") { event.preventDefault(); markOut(); return; }
       if (event.key.toLowerCase() === "r") { event.preventDefault(); markReviewed(); return; }
       if (event.key.toLowerCase() === "n") { event.preventDefault(); void jumpNext(); return; }
+      if (event.key === "[" || event.key === "]") {
+        event.preventDefault();
+        const intervals = draftRef.current?.intervals ?? [];
+        const playheadMs = Number.isFinite(video.currentTime) && video.currentTime > 0 ? Math.round(video.currentTime * 1000) : currentTimeMs;
+        const target = event.key === "["
+          ? [...intervals].reverse().find((item) => item.start_ms < playheadMs - 50)
+          : intervals.find((item) => item.start_ms > playheadMs + 50);
+        if (target) {
+          video.currentTime = target.start_ms / 1000;
+          setCurrentTimeMs(target.start_ms);
+        }
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (!claimRef.current) return;
+        const intervals = draftRef.current?.intervals ?? [];
+        const playheadMs = Number.isFinite(video.currentTime) && video.currentTime > 0 ? Math.round(video.currentTime * 1000) : currentTimeMs;
+        const containing = intervals.find((item) => item.start_ms <= playheadMs && playheadMs <= item.end_ms);
+        if (containing) {
+          event.preventDefault();
+          removeInterval(containing.id);
+        }
+        return;
+      }
       if (event.key.toLowerCase() === "j" || event.key.toLowerCase() === "l") {
         event.preventDefault();
         const rates = [0.25,0.5,1,2,4];
@@ -477,7 +512,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, boxMode, changeZoom, jumpNext, markIn, markOut, markReviewed, redo, seek, speed, togglePlay, undo, zoom]);
+  }, [activeId, boxMode, changeZoom, currentTimeMs, helpOpen, jumpNext, markIn, markOut, markReviewed, redo, releaseAndClose, removeInterval, seek, speed, togglePlay, undo, zoom]);
 
   const handleStageWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -581,7 +616,7 @@ export default function App() {
   return <div className="app-shell">
     <header className="topbar">
       <div className="topbar-left"><div className="brand"><span className="brand-mark small">PR</span><div><strong>Plate Review</strong><span>{boxMode ? "Plate box dataset" : "Manual clip selection"}</span></div></div><div className="jobs-popover"><button className="jobs-popover-trigger" aria-expanded={jobsPopoverOpen} onClick={() => setJobsPopoverOpen((value) => !value)}>Export jobs <span className="jobs-active-pill">{activeJobCount}</span><i>{jobsPopoverOpen ? "⌃" : "⌄"}</i></button>{jobsPopoverOpen && <div className="jobs-popover-panel"><div className="jobs-popover-heading"><strong>Clip exports</strong><span>{activeJobCount} active · {jobs.length} total</span></div>{jobs.length ? jobs.map((job) => <div className="job-row" key={job.id}><div className="job-line"><span>{job.status === "complete" ? "Export complete" : job.phase}</span><b>{job.status === "complete" ? "DONE" : `${Math.round(job.progress*100)}%`}</b></div><div className="job-progress"><i style={{ width: `${job.progress*100}%` }} /></div>{job.error && <span className="job-error">{job.error}</span>}{job.items.filter((item) => item.error).map((item) => <span className="job-error" key={item.id}>{item.video_id.slice(0,8)}: {item.error}</span>)}{job.items.flatMap((item) => item.outputs).map((output) => <a className="output-link" key={`${job.id}-${output.file_name}`} href={`/api/exports/${job.id}/files/${encodeURIComponent(output.file_name)}`} download={output.file_name}>{output.file_name}<span>{humanBytes(output.bytes)}</span></a>)}{(job.status === "complete" || job.status === "failed") && <a className="manifest-link" href={`/api/exports/${job.id}/manifest`} download={`${job.id}-manifest.json`}>Download manifest</a>}{job.status === "failed" && <button className="small-button" onClick={() => void api<ExportJob>(`/api/exports/${job.id}/retry`, json("POST", {})).then((updated) => setJobs((current) => current.map((item) => item.id === updated.id ? updated : item))).catch((reason) => setError(reason.message))}>Retry failed files</button>}</div>) : <p className="jobs-popover-empty">No clip exports yet.</p>}</div>}</div></div>
-      <div className="topbar-right">{boxMode ? <button className="mode-button" onClick={() => setBoxMode(false)}>Clip review <span>↗</span></button> : <button className="mode-button" onClick={() => void (async () => { await flushRef.current().catch(() => undefined); await releaseAndClose(); setBoxMode(true); })()}>Plate boxes <span>↗</span></button>}<span className={`network-indicator ${isOnline ? "online" : "offline"}`}>{isOnline ? "Connected" : "Offline"}</span><span className="user-label">{user.username}</span>{!boxMode && <button className="quiet-button" onClick={() => setHelpOpen(true)}>Shortcuts <kbd>?</kbd></button>}<button className="quiet-button" onClick={() => void logout()}>Sign out</button></div>
+      <div className="topbar-right">{boxMode ? <button className="mode-button" onClick={() => setBoxMode(false)}>Clip review <span>↗</span></button> : <button className="mode-button" onClick={() => void (async () => { await flushRef.current().catch(() => undefined); await releaseAndClose(); setBoxMode(true); })()}>Plate boxes <span>↗</span></button>}<span className={`network-indicator ${isOnline ? "online" : "offline"}`}>{isOnline ? "Connected" : "Offline"}</span><span className="user-label">{user.username}</span><button className="quiet-button" onClick={() => setHelpOpen(true)}>Shortcuts <kbd>?</kbd></button><button className="quiet-button" onClick={() => void logout()}>Sign out</button></div>
     </header>
     {boxMode ? <BoxReview onBack={() => setBoxMode(false)} /> : <>
     {error && !activeVideo && <div className="global-notice" role="status"><span>{error}</span><button aria-label="Dismiss message" onClick={() => setError("")}>×</button></div>}
@@ -660,6 +695,6 @@ export default function App() {
     <footer className="bottom-bar"><div><span className="disk-dot" />Original videos remain on the server</div><div>{selectedForExport.size > 0 && <button className="export-button" onClick={() => void exportSelected()}>Export {selectedForExport.size} reviewed video{selectedForExport.size === 1 ? "" : "s"} <span>↗</span></button>}<span className="footer-status">{activeJobCount ? `${activeJobCount} export job(s) running` : "Export queue idle"}</span></div></footer>
     </>}
 
-    {!boxMode && helpOpen && <div className="modal-backdrop" onMouseDown={(event) => { if(event.target===event.currentTarget) setHelpOpen(false); }}><section className="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-title"><button className="modal-close" aria-label="Close" onClick={() => setHelpOpen(false)}>×</button><p className="eyebrow">KEYBOARD WORKFLOW</p><h2 id="shortcut-title">Review without reaching for the mouse.</h2><div className="shortcut-list"><span>Play / pause</span><kbd>Space</kbd><span>Mark interval start / end</span><kbd>I / O</kbd><span>Step 100 ms</span><kbd>← / →</kbd><span>Step 1 s / 10 s</span><kbd>Shift / Alt + arrows</kbd><span>Change speed</span><kbd>J / L</kbd><span>Zoom / reset</span><kbd>+ / − / 0</kbd><span>Undo / redo</span><kbd>Ctrl + Z / Shift</kbd><span>Mark reviewed / next</span><kbd>R / N</kbd></div><p className="muted">Shortcuts pause when a text field is active. Scroll over the video to zoom around the pointer.</p></section></div>}
+    {helpOpen && <div className="modal-backdrop" onMouseDown={(event) => { if(event.target===event.currentTarget) setHelpOpen(false); }}><section className="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-title"><button className="modal-close" aria-label="Close" onClick={() => setHelpOpen(false)}>×</button><p className="eyebrow">{boxMode ? "PLATE BOXES WORKFLOW" : "KEYBOARD WORKFLOW"}</p><h2 id="shortcut-title">Review without reaching for the mouse.</h2>{boxMode ? <div className="shortcut-list"><span>Play / pause</span><kbd>Space / K</kbd><span>Step 1 / 10 frames</span><kbd>← / → (Shift)</kbd><span>Select track and jump</span><kbd>↑ / ↓ / 1–9</kbd><span>Jump to selected track</span><kbd>G</kbd><span>Edit plate text</span><kbd>Enter / E</kbd><span>Next / previous input</span><kbd>↓ / ↑ (in input)</kbd><span>Toggle include track</span><kbd>X</kbd><span>Toggle boxes / frame preview</span><kbd>B / F</kbd><span>Zoom / reset</span><kbd>+ / − / 0</kbd><span>Save / mark done</span><kbd>Ctrl + S / Ctrl + Enter (D)</kbd><span>Previous / next clip</span><kbd>P / N</kbd><span>Back to clip grid</span><kbd>Esc</kbd></div> : <div className="shortcut-list"><span>Play / pause</span><kbd>Space / K</kbd><span>Mark interval start / end</span><kbd>I / O</kbd><span>Previous / next interval</span><kbd>[ / ]</kbd><span>Delete interval at playhead</span><kbd>Delete / Backspace</kbd><span>Step 100 ms</span><kbd>← / →</kbd><span>Step 1 s / 10 s</span><kbd>Shift / Alt + arrows</kbd><span>Change speed</span><kbd>J / L</kbd><span>Zoom / reset</span><kbd>+ / − / 0</kbd><span>Undo / redo</span><kbd>Ctrl + Z / Shift</kbd><span>Save / mark reviewed / next</span><kbd>Ctrl + S / R / N</kbd><span>Close video / modal</span><kbd>Esc</kbd></div>}<p className="muted">Shortcuts pause when a text field is active. Scroll over the video to zoom around the pointer.</p></section></div>}
   </div>;
 }
