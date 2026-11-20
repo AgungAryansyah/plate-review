@@ -348,4 +348,38 @@ describe("Plate boxes", () => {
     fireEvent.keyDown(window, { key: "n" });
     expect(await screen.findByRole("heading", { name: "next-clip.mp4" })).toBeInTheDocument();
   });
+
+  it("clicks a bounding box to scroll, focus its plate input, and auto-tick the checkbox", async () => {
+    const scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+    const track1 = { ...detail.tracks[0], id: "box-01" };
+    const track2 = {
+      id: "box-02",
+      selected: false,
+      plate_text: "",
+      detections: [0, 40, 80].map((timestamp_ms, frame) => ({ frame, timestamp_ms, x_min: 300, y_min: 200, x_max: 420, y_max: 240, confidence: 0.9 })),
+    };
+    const twoTrackDetail = { ...detail, tracks: [track1, track2] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/boxes/clips" ? response([clip]) : response(twoTrackDetail));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<BoxReview onBack={() => undefined} />);
+
+    await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
+    const boxes = screen.getByRole("img", { name: "Detected plate boxes" }).querySelectorAll("g");
+    expect(boxes).toHaveLength(2);
+
+    await user.click(boxes[1]);
+    const input2 = screen.getByRole("textbox", { name: "Plate text for box box-02" });
+    const checkbox2 = screen.getByRole("checkbox", { name: "Include box box-02" });
+    expect(input2).toHaveFocus();
+    expect(scrollSpy).toHaveBeenCalledWith({ block: "center" });
+    expect(checkbox2).not.toBeChecked();
+
+    await user.type(input2, "B 42 XYZ");
+    expect(checkbox2).toBeChecked();
+
+    await user.clear(input2);
+    expect(checkbox2).not.toBeChecked();
+  });
 });

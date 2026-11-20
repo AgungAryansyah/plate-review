@@ -42,7 +42,15 @@ function editableTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 }
 
-export default function BoxReview({ onBack }: { onBack: () => void }) {
+export default function BoxReview({
+  onBack,
+  libraryResetSeq = 0,
+  onDetailChange,
+}: {
+  onBack: () => void;
+  libraryResetSeq?: number;
+  onDetailChange?: (hasDetail: boolean, clipName: string | null) => void;
+}) {
   const [clips, setClips] = useState<BoxClip[]>([]);
   const [statusFilter, setStatusFilter] = useState<"all" | "complete" | "need_label" | "failed" | "unsegmented" | "processing">("all");
   const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(new Set());
@@ -117,6 +125,16 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
     setPan((current) => ({ x: x - ratio * (x - current.x), y: y - ratio * (y - current.y) }));
     setZoom(next);
   }, [zoom]);
+  const focusTrackInput = useCallback((trackId: string) => {
+    setSelectedTrack(trackId);
+    trackRowRefs.current[trackId]?.scrollIntoView?.({ block: "center" });
+    const input = trackInputRefs.current[trackId];
+    if (input && !input.disabled) {
+      input.focus();
+      const len = input.value.length;
+      input.setSelectionRange?.(len, len);
+    }
+  }, []);
   const onStagePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const pointerButton = (event as ReactPointerEvent<HTMLDivElement> & { button?: number }).button;
     if (zoom <= 1 || (pointerButton !== undefined && pointerButton !== 0)) return;
@@ -136,7 +154,7 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
   const onStagePointerUp = () => {
     const origin = panOrigin.current;
     panOrigin.current = null;
-    if (origin && !didPan.current && origin.trackId) setSelectedTrack(origin.trackId);
+    if (origin && !didPan.current && origin.trackId) focusTrackInput(origin.trackId);
     if (didPan.current) window.setTimeout(() => { didPan.current = false; }, 120);
   };
 
@@ -233,6 +251,16 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
     if (videoRef.current) videoRef.current.currentTime = clamped / 1000;
   }, [duration]);
 
+  useEffect(() => {
+    if (libraryResetSeq > 0) {
+      requestSeq.current++;
+      setDetail(null);
+    }
+  }, [libraryResetSeq]);
+  useEffect(() => {
+    onDetailChange?.(!!detail, detail?.clip.name ?? null);
+  }, [detail, onDetailChange]);
+
   const seekToTrack = useCallback((trackId: string) => {
     const visible = visibleTracks.find((t) => t.id === trackId);
     const track = (visible && visible.detections.length > 0 ? visible : undefined) ?? tracks.find((t) => t.id === trackId);
@@ -245,16 +273,6 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
       : first;
     seekToMs(target.timestamp_ms);
   }, [currentMs, seekToMs, tracks, visibleTracks]);
-
-  const focusTrackInput = useCallback((trackId: string) => {
-    setSelectedTrack(trackId);
-    trackRowRefs.current[trackId]?.scrollIntoView?.({ block: "nearest" });
-    const input = trackInputRefs.current[trackId];
-    if (input && !input.disabled) {
-      input.focus();
-      input.select();
-    }
-  }, []);
 
   const cycleTrack = useCallback((delta: number, focusInput = false) => {
     if (tracks.length === 0) return;
@@ -454,9 +472,9 @@ export default function BoxReview({ onBack }: { onBack: () => void }) {
         <video ref={videoRef} className={showDecodedFrame ? "box-video-hidden" : ""} src={`/api/boxes/clips/${encodeURIComponent(detail.clip.id)}/stream`} preload="metadata" playsInline onTimeUpdate={(event) => setCurrentMs(event.currentTarget.currentTime * 1000)} onPlay={() => { if (!framePreview && !videoFailed) setPlaying(true); }} onPause={() => { if (!framePreview && !videoFailed) setPlaying(false); }} onError={() => setVideoFailed(true)} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />
         {showDecodedFrame && <div className="box-decoded-frame"><img draggable={false} onDragStart={(event) => event.preventDefault()} src={decodedFrame.src} alt={`Decoded source frame at ${clock(decodedFrame.timestampMs)}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />{(videoFailed || framePreview) && <span>{videoFailed ? "Video playback unavailable · showing decoded frame" : "Decoded frame preview · 5 frames per second"}{frameLoading ? " · loading next frame" : ""}</span>}</div>}
         {(framePreview || videoFailed) && !showDecodedFrame && <div className="box-frame-loading" role="status">{frameLoading ? "Loading decoded source frame…" : "Decoded source frame unavailable"}</div>}
-        {showBoxes && <svg className="box-overlay" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} viewBox={`0 0 ${detail.meta.width} ${detail.meta.height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label="Detected plate boxes">{visibleTracks.map((track) => { const detection = activeDetection(track); if (!detection) return null; const active = selectedTrack === track.id; return <g key={track.id} data-track-id={track.id} onClick={() => { if (!didPan.current) setSelectedTrack(track.id); }} className={active ? "box-active" : ""}><rect x={detection.x_min} y={detection.y_min} width={detection.x_max - detection.x_min} height={detection.y_max - detection.y_min} /><text x={detection.x_min} y={Math.max(16, detection.y_min - 7)}>{track.id} · {(detection.confidence * 100).toFixed(0)}%</text></g>; })}</svg>}
+        {showBoxes && <svg className="box-overlay" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} viewBox={`0 0 ${detail.meta.width} ${detail.meta.height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label="Detected plate boxes">{visibleTracks.map((track) => { const detection = activeDetection(track); if (!detection) return null; const active = selectedTrack === track.id; return <g key={track.id} data-track-id={track.id} onClick={() => { if (!didPan.current) focusTrackInput(track.id); }} className={active ? "box-active" : ""}><rect x={detection.x_min} y={detection.y_min} width={detection.x_max - detection.x_min} height={detection.y_max - detection.y_min} /><text x={detection.x_min} y={Math.max(16, detection.y_min - 7)}>{track.id} · {(detection.confidence * 100).toFixed(0)}%</text></g>; })}</svg>}
       </div><div className="box-shortcuts-hint"><kbd>Space</kbd> Play · <kbd>←/→</kbd> Frame · <kbd>↑/↓</kbd> Track · <kbd>Enter</kbd> Label · <kbd>X</kbd> Include · <kbd>G</kbd> Jump · <kbd>B</kbd> Boxes · <kbd>F</kbd> Frame · <kbd>Ctrl+S</kbd> Save · <kbd>Ctrl+Enter</kbd> Done · <kbd>N/P</kbd> Clip</div><div className="box-transport"><button aria-label={playing ? "Pause clip" : "Play clip"} onClick={togglePlay}>{playing ? "Ⅱ" : "▶"}</button><input aria-label="Clip timeline" type="range" min="0" max={duration || 1} step="1" value={Math.min(currentMs, duration)} onChange={(event) => seekToMs(Number(event.target.value))} /><span>{clock(currentMs)}</span><button className="preview-toggle" onClick={toggleFramePreview}>{framePreview ? "Video" : "Frame preview"}</button><button className="preview-toggle" aria-pressed={showBoxes} onClick={() => setShowBoxes((shown) => !shown)}>{showBoxes ? "Hide boxes" : "Show boxes"}</button></div></section>
-      <aside className="box-sidebar"><section className="box-panel box-tracks-panel"><div className="box-panel-title"><div><p className="eyebrow">TRACK REVIEW</p><h3>Plate candidates <span>{tracks.length}</span></h3></div><span className="box-small-note">No OCR</span></div>{tracks.length ? <div className="track-list">{tracks.map((track) => <div ref={(el) => { trackRowRefs.current[track.id] = el; }} className={`track-row ${selectedTrack === track.id ? "focused" : ""}`} key={track.id} onClick={() => setSelectedTrack(track.id)}><label className="track-toggle" onClick={(event) => event.stopPropagation()}><input type="checkbox" disabled={jobIsActive} checked={track.selected} onChange={(event) => updateTrack(track.id, { selected: event.target.checked })} aria-label={`Include box ${track.id}`} /><span>{track.id}</span></label><input ref={(el) => { trackInputRefs.current[track.id] = el; }} className="plate-entry" disabled={jobIsActive} aria-label={`Plate text for box ${track.id}`} placeholder="Enter plate text" value={track.plate_text} onFocus={() => setSelectedTrack(track.id)} onChange={(event) => { const value = event.target.value; updateTrack(track.id, value.trim().length > 0 && !track.selected ? { plate_text: value, selected: true } : { plate_text: value }); }} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!saving && !jobIsActive) void save(); return; } if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); if (!saving && !jobIsActive && detail.clip.status === "complete") void markDone(); return; } if (event.key === "Enter" || event.key === "Escape") { event.preventDefault(); event.currentTarget.blur(); return; } if (event.key === "ArrowDown") { event.preventDefault(); cycleTrack(1, true); return; } if (event.key === "ArrowUp") { event.preventDefault(); cycleTrack(-1, true); } }} /><div className="track-meta"><small>{visibleTracks.find((item) => item.id === track.id)?.detections.length ?? 0} frames after filtering</small><button type="button" className="track-jump" title="Jump to track frame (G)" onClick={(event) => { event.stopPropagation(); setSelectedTrack(track.id); seekToTrack(track.id); }}>Jump</button></div></div>)}</div> : <p className="box-hint">No tracks yet. Run segmentation to find plate candidates.</p>}</section>
+      <aside className="box-sidebar"><section className="box-panel box-tracks-panel"><div className="box-panel-title"><div><p className="eyebrow">TRACK REVIEW</p><h3>Plate candidates <span>{tracks.length}</span></h3></div><span className="box-small-note">No OCR</span></div>{tracks.length ? <div className="track-list">{tracks.map((track) => <div ref={(el) => { trackRowRefs.current[track.id] = el; }} className={`track-row ${selectedTrack === track.id ? "focused" : ""}`} key={track.id} onClick={() => focusTrackInput(track.id)}><label className="track-toggle" onClick={(event) => event.stopPropagation()}><input type="checkbox" disabled={jobIsActive} checked={track.selected} onChange={(event) => updateTrack(track.id, { selected: event.target.checked })} aria-label={`Include box ${track.id}`} /><span>{track.id}</span></label><input ref={(el) => { trackInputRefs.current[track.id] = el; }} className="plate-entry" disabled={jobIsActive} aria-label={`Plate text for box ${track.id}`} placeholder="Enter plate text" value={track.plate_text} onFocus={() => setSelectedTrack(track.id)} onChange={(event) => { const value = event.target.value; const hasText = value.trim().length > 0; updateTrack(track.id, { plate_text: value, selected: hasText }); }} onBlur={() => { if (track.plate_text.trim().length > 0 && !track.selected) updateTrack(track.id, { selected: true }); }} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!saving && !jobIsActive) void save(); return; } if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); if (!saving && !jobIsActive && detail.clip.status === "complete") void markDone(); return; } if (event.key === "Enter" || event.key === "Escape") { event.preventDefault(); event.currentTarget.blur(); return; } if (event.key === "ArrowDown") { event.preventDefault(); cycleTrack(1, true); return; } if (event.key === "ArrowUp") { event.preventDefault(); cycleTrack(-1, true); } }} /><div className="track-meta"><small>{visibleTracks.find((item) => item.id === track.id)?.detections.length ?? 0} frames after filtering</small><button type="button" className="track-jump" title="Jump to track frame (G)" onClick={(event) => { event.stopPropagation(); setSelectedTrack(track.id); seekToTrack(track.id); }}>Jump</button></div></div>)}</div> : <p className="box-hint">No tracks yet. Run segmentation to find plate candidates.</p>}</section>
         <section className="box-panel box-settings">
           <details className="box-settings-details" open>
             <summary className="box-panel-title"><div><p className="eyebrow">REVIEW FILTERS</p><h3>Box filtering</h3></div><span className="box-small-note">Toggle</span></summary>
