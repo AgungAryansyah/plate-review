@@ -235,4 +235,117 @@ describe("Plate boxes", () => {
     expect(screen.getByRole("img", { name: "Detected plate boxes" })).toHaveStyle({ transform: "translate(25px, 10px) scale(1.25)" });
     expect(screen.queryByRole("img", { name: /Decoded source frame/ })).not.toBeInTheDocument();
   });
+
+  it("supports keyboard workflow for track cycling, labeling, frame stepping, saving, done, and clip navigation", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const secondClip = { ...clip, id: "clip-2", name: "next-clip.mp4", review_state: "need_label" as const };
+    const track1 = {
+      ...detail.tracks[0],
+      detections: [0, 40, 80].map((timestamp_ms, frame) => ({ frame, timestamp_ms, x_min: 100, y_min: 200, x_max: 220, y_max: 240, confidence: 0.9 })),
+    };
+    const track2 = {
+      id: "box-02",
+      selected: false,
+      plate_text: "",
+      detections: [10, 11, 12].map((frame) => ({ frame, timestamp_ms: frame * 40, x_min: 300, y_min: 200, x_max: 420, y_max: 240, confidence: 0.92 })),
+    };
+    const detail1 = { ...detail, clip: { ...clip, review_state: "need_label" as const }, tracks: [track1, track2] };
+    const detail2 = { ...detail, clip: secondClip, tracks: [{ ...track1, id: "box-03" }] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/boxes/clips") return response([detail1.clip, secondClip]);
+      if (path === "/api/boxes/clips/clip-1") return response(detail1);
+      if (path === "/api/boxes/clips/clip-2") return response(detail2);
+      if (path === "/api/boxes/clips/clip-1/review" && init?.method === "PUT") {
+        const body = JSON.parse(String(init.body));
+        return response({
+          ...detail1,
+          revision: 8,
+          tracks: detail1.tracks.map((track) => {
+            const choice = body.tracks.find((item: { id: string }) => item.id === track.id);
+            return choice ? { ...track, selected: choice.selected, plate_text: choice.plate_text } : track;
+          }),
+        });
+      }
+      if (path === "/api/boxes/clips/clip-1/done" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        return response({
+          clip: {
+            ...detail1,
+            clip: { ...detail1.clip, review_state: "complete" as const },
+            revision: 9,
+            tracks: detail1.tracks.map((track) => {
+              const choice = body.tracks.find((item: { id: string }) => item.id === track.id);
+              return choice ? { ...track, selected: choice.selected, plate_text: choice.plate_text } : track;
+            }),
+          },
+          saved_to: "dataset-exports/drive-a-clip",
+        });
+      }
+      return response({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<BoxReview onBack={() => undefined} />);
+
+    await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
+    expect(await screen.findByRole("heading", { name: /Plate candidates/ })).toBeInTheDocument();
+
+    const timeline = screen.getByRole("slider", { name: "Clip timeline" });
+    expect(timeline).toHaveValue("0");
+
+    fireEvent.keyDown(window, { key: "ArrowDown" });
+    expect(timeline).toHaveValue("400");
+    expect(screen.getByRole("textbox", { name: "Plate text for box box-02" }).closest(".track-row")).toHaveClass("focused");
+
+    fireEvent.keyDown(window, { key: "ArrowUp" });
+    expect(timeline).toHaveValue("0");
+
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(timeline).toHaveValue("40");
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    expect(timeline).toHaveValue("0");
+
+    fireEvent.keyDown(window, { key: "b" });
+    expect(screen.queryByRole("img", { name: "Detected plate boxes" })).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "b" });
+    expect(screen.getByRole("img", { name: "Detected plate boxes" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "f" });
+    expect(screen.getByRole("button", { name: "Video" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "f" });
+    expect(screen.getByRole("button", { name: "Frame preview" })).toBeInTheDocument();
+
+    const input1 = screen.getByRole("textbox", { name: "Plate text for box box-01" });
+    const input2 = screen.getByRole("textbox", { name: "Plate text for box box-02" });
+    const checkbox1 = screen.getByRole("checkbox", { name: "Include box box-01" });
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(input1).toHaveFocus();
+
+    await user.type(input1, "AB 1234 CD");
+    expect(checkbox1).toBeChecked();
+
+    await user.keyboard("{ArrowDown}");
+    expect(input2).toHaveFocus();
+    expect(timeline).toHaveValue("400");
+
+    await user.keyboard("{Enter}");
+    expect(input2).not.toHaveFocus();
+
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/boxes/clips/clip-1/review",
+      expect.objectContaining({
+        method: "PUT",
+        body: expect.stringContaining('"plate_text":"AB 1234 CD"'),
+      }),
+    ));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save review" })).toBeEnabled());
+
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
+    expect(await screen.findByText(/Saved on this PC/)).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "n" });
+    expect(await screen.findByRole("heading", { name: "next-clip.mp4" })).toBeInTheDocument();
+  });
 });
