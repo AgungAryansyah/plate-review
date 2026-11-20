@@ -70,6 +70,7 @@ export default function BoxReview({
   const [frameLoading, setFrameLoading] = useState(false);
   const [showBoxes, setShowBoxes] = useState(true);
   const [playing, setPlaying] = useState(false);
+  const [jobLogOpen, setJobLogOpen] = useState(false);
   const framePreviewTime = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -254,6 +255,7 @@ export default function BoxReview({
   useEffect(() => {
     if (libraryResetSeq > 0) {
       requestSeq.current++;
+      setJobLogOpen(false);
       setDetail(null);
     }
   }, [libraryResetSeq]);
@@ -331,7 +333,7 @@ export default function BoxReview({
   }, [detail, loadDetail, refreshClips, settings, tracks]);
 
   const selectClip = useCallback((clip: BoxClip) => {
-    setDetail(null); setCurrentMs(0); setPlaying(false); setVideoFailed(false);
+    setDetail(null); setJobLogOpen(false); setCurrentMs(0); setPlaying(false); setVideoFailed(false);
     setFramePreview(false); setDecodedFrame(null); setShowBoxes(true); setZoom(1); setPan({ x: 0, y: 0 });
     void loadDetail(clip.id);
   }, [loadDetail]);
@@ -425,11 +427,16 @@ export default function BoxReview({
       }
       if (key === "n") { event.preventDefault(); openAdjacentClip(1); return; }
       if (key === "p") { event.preventDefault(); openAdjacentClip(-1); return; }
-      if (event.key === "Escape") { event.preventDefault(); requestSeq.current++; setDetail(null); }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (jobLogOpen) { setJobLogOpen(false); return; }
+        requestSeq.current++;
+        setDetail(null);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [currentMs, cycleTrack, detail, focusTrackInput, jobIsActive, markDone, openAdjacentClip, save, saving, seekToMs, seekToTrack, selectedTrack, setZoomAt, toggleFramePreview, togglePlay, tracks, zoom]);
+  }, [currentMs, cycleTrack, detail, focusTrackInput, jobIsActive, jobLogOpen, markDone, openAdjacentClip, save, saving, seekToMs, seekToTrack, selectedTrack, setZoomAt, toggleFramePreview, togglePlay, tracks, zoom]);
 
   const frameUrl = detail ? `/api/boxes/clips/${encodeURIComponent(detail.clip.id)}/frame?timestamp_ms=${Math.round(currentMs)}` : "";
   const showDecodedFrame = !!detail && (framePreview || videoFailed) && decodedFrame?.clipId === detail.clip.id;
@@ -466,8 +473,7 @@ export default function BoxReview({
         return filteredClips.length ? <div className="clip-grid">{filteredClips.map((clip) => { const displayState = reviewState(clip); const displayLabel = labels[displayState as keyof typeof labels] ?? displayState; return <article className="clip-card-wrap" key={clip.id}>{(clip.status === "unsegmented" || clip.status === "failed") && <input className="clip-select" type="checkbox" aria-label={`Select ${clip.name} for segmentation`} checked={selectedClipIds.has(clip.id)} disabled={!!batchProgress} onChange={() => toggleClipSelection(clip.id)} />}<button className="clip-card" onClick={() => selectClip(clip)}><span className={`clip-status ${displayState}`}>{displayLabel}</span><strong>{clip.name}</strong><span>{clock(clip.duration_ms)} <i>·</i> {size(clip.bytes)}</span>{clip.status === "running" || clip.status === "queued" ? <span className="clip-progress"><i style={{ width: `${Math.round(clip.progress * 100)}%` }} /></span> : null}{clip.error && <span className="clip-error">{clip.error}</span>}</button></article>;})}</div> : !loading && <div className="box-empty"><span>▧</span><h3>{statusFilter === "all" ? "No clips available" : `No ${statusFilter === "need_label" ? "clips need labeling" : statusFilter === "unsegmented" ? "unsegmented clips" : `${statusFilter} clips`}`}</h3><p>Choose another status filter to see clips in a different state.</p></div>;
       })()}
     </section> : <>
-      <div className="box-detail-heading"><button className="back-button" title="Back to clips (Esc)" onClick={() => { requestSeq.current++; setDetail(null); }}>←</button><div className="box-detail-title"><p className="eyebrow">TRIMMED CLIP</p><h2>{detail.clip.name}</h2><span>{clock(duration)} · {detail.meta.width} × {detail.meta.height} · {detail.meta.fps.toFixed(2)} fps · {detail.meta.frame_count.toLocaleString()} frames</span></div><div className="box-detail-nav"><button className="secondary-button" aria-label="Previous clip" title="Previous clip (P)" disabled={filteredClips.length <= 1} onClick={() => openAdjacentClip(-1)}>Prev <kbd>P</kbd></button><button className="secondary-button" aria-label="Next clip" title="Next clip (N)" disabled={filteredClips.length <= 1} onClick={() => openAdjacentClip(1)}>Next <kbd>N</kbd></button><button className="secondary-button" aria-label="Refresh clips" onClick={() => void refreshClips()}>↻</button><span className={`clip-status ${detail.clip.status === "complete" ? detail.clip.review_state : detail.clip.status}`}>{detail.clip.status === "complete" ? (detail.clip.review_state === "need_label" ? "Need label" : "Complete") : detail.clip.status}</span></div></div>
-      {activeJob && <section className="box-job" aria-live="polite"><div className="job-title"><strong>{activeJob.phase || activeJob.status}</strong><span>{Math.round(activeJob.progress * 100)}%</span></div><div className="box-progress"><i style={{ width: `${Math.round(activeJob.progress * 100)}%` }} /></div>{activeJob.error && <p className="clip-error">{activeJob.error}</p>}<details open={jobIsActive}><summary>Segmentation log <span>{activeJob.logs.length} lines</span></summary><pre>{activeJob.logs.length ? activeJob.logs.join("\n") : jobIsActive ? "Waiting for worker output…" : "No worker output recorded."}</pre></details></section>}
+      <div className="box-detail-heading"><button className="back-button" title="Back to clips (Esc)" onClick={() => { requestSeq.current++; setJobLogOpen(false); setDetail(null); }}>←</button><div className="box-detail-title"><p className="eyebrow">TRIMMED CLIP</p><h2>{detail.clip.name}</h2><span>{clock(duration)} · {detail.meta.width} × {detail.meta.height} · {detail.meta.fps.toFixed(2)} fps · {detail.meta.frame_count.toLocaleString()} frames</span></div><div className="box-detail-nav"><button className="secondary-button" aria-label="Previous clip" title="Previous clip (P)" disabled={filteredClips.length <= 1} onClick={() => openAdjacentClip(-1)}>Prev <kbd>P</kbd></button><button className="secondary-button" aria-label="Next clip" title="Next clip (N)" disabled={filteredClips.length <= 1} onClick={() => openAdjacentClip(1)}>Next <kbd>N</kbd></button>{activeJob && <div className="box-job-popover"><button className={`secondary-button box-job-trigger ${jobLogOpen ? "active" : ""}`} aria-expanded={jobLogOpen} aria-label="Segmentation log" onClick={() => setJobLogOpen((open) => !open)}>Log <span>{Math.round(activeJob.progress * 100)}%</span></button>{jobLogOpen && <section className="box-job-popup" role="dialog" aria-label="Segmentation progress and log" aria-live="polite"><div className="box-job-popup-head"><div className="job-title"><strong>{activeJob.phase || activeJob.status}</strong><span>{Math.round(activeJob.progress * 100)}%</span></div><button className="box-job-close" aria-label="Close segmentation log" onClick={() => setJobLogOpen(false)}>×</button></div><div className="box-progress"><i style={{ width: `${Math.round(activeJob.progress * 100)}%` }} /></div>{activeJob.error && <p className="clip-error">{activeJob.error}</p>}<div className="box-job-log-meta"><span>Segmentation log</span><span>{activeJob.logs.length} lines</span></div><pre>{activeJob.logs.length ? activeJob.logs.join("\n") : jobIsActive ? "Waiting for worker output…" : "No worker output recorded."}</pre></section>}</div>}<button className="secondary-button" aria-label="Refresh clips" onClick={() => void refreshClips()}>↻</button><span className={`clip-status ${detail.clip.status === "complete" ? detail.clip.review_state : detail.clip.status}`}>{detail.clip.status === "complete" ? (detail.clip.review_state === "need_label" ? "Need label" : "Complete") : detail.clip.status}</span></div></div>
       <div className="box-layout"><section className="box-viewer"><div className="box-viewer-toolbar"><div><span className="live-dot" /> RAW SOURCE <span>·</span> {detail.clip.name}</div><div className="box-zoom-controls"><button aria-label="Zoom out" disabled={zoom <= 1} onClick={() => setZoomAt(zoom / 1.25)}>−</button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" disabled={zoom >= 8} onClick={() => setZoomAt(zoom * 1.25)}>+</button><button onClick={() => setZoomAt(1)}>Reset</button></div><span>{clock(currentMs)} / {clock(duration)}</span></div><div className={`box-stage ${zoom > 1 ? "zoomed" : ""}`} ref={stageRef} onPointerDown={onStagePointerDown} onPointerMove={onStagePointerMove} onPointerUp={onStagePointerUp} onPointerCancel={onStagePointerUp}>
         <video ref={videoRef} className={showDecodedFrame ? "box-video-hidden" : ""} src={`/api/boxes/clips/${encodeURIComponent(detail.clip.id)}/stream`} preload="metadata" playsInline onTimeUpdate={(event) => setCurrentMs(event.currentTarget.currentTime * 1000)} onPlay={() => { if (!framePreview && !videoFailed) setPlaying(true); }} onPause={() => { if (!framePreview && !videoFailed) setPlaying(false); }} onError={() => setVideoFailed(true)} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />
         {showDecodedFrame && <div className="box-decoded-frame"><img draggable={false} onDragStart={(event) => event.preventDefault()} src={decodedFrame.src} alt={`Decoded source frame at ${clock(decodedFrame.timestampMs)}`} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }} />{(videoFailed || framePreview) && <span>{videoFailed ? "Video playback unavailable · showing decoded frame" : "Decoded frame preview · 5 frames per second"}{frameLoading ? " · loading next frame" : ""}</span>}</div>}

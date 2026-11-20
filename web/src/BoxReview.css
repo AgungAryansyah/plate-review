@@ -51,12 +51,18 @@
 .box-detail-nav { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
 .box-detail-nav .secondary-button { min-height: 27px; padding: 0 8px; font-size: 9px; }
 .box-detail-nav kbd, .box-actions kbd { margin-left: 4px; }
-.box-job { flex: 0 0 auto; margin: 8px 14px 0; padding: 8px 12px; border: 1px solid #383a35; border-radius: 8px; background: #1a1b1d; }
-.job-title { display: flex; justify-content: space-between; margin-bottom: 6px; color: #d4d5d3; font-size: 10px; }
-.job-title span, .box-job summary span { color: #9096a0; font: 9px var(--mono); }
-.box-job details { margin-top: 6px; }
-.box-job summary { display: flex; justify-content: space-between; color: #aeb2ba; cursor: pointer; font-size: 10px; }
-.box-job pre { max-height: 72px; overflow: auto; margin: 6px 0 0; padding: 8px; border-radius: 5px; color: #9ca79f; background: #111315; font: 9px/1.5 var(--mono); white-space: pre-wrap; }
+.box-job-popover { position: relative; }
+.box-job-trigger { display: inline-flex; align-items: center; gap: 6px; }
+.box-job-trigger span { color: #8bd3c2; font: 8px var(--mono); }
+.box-job-trigger.active { border-color: #4d867d; color: #e7f6f2; background: #1c2c2a; }
+.box-job-popup { position: absolute; z-index: 15; top: calc(100% + 8px); right: 0; width: min(440px, calc(100vw - 28px)); padding: 12px 14px; border: 1px solid #3a4049; border-radius: 9px; background: #1a1d23; box-shadow: 0 14px 50px #000b; }
+.box-job-popup-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.box-job-popup-head .job-title { flex: 1; margin-bottom: 0; }
+.box-job-close { width: 22px; height: 22px; border: 1px solid #3a3e46; border-radius: 5px; color: #b2b6bd; background: #22252c; cursor: pointer; font-size: 14px; line-height: 1; }
+.job-title { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; color: #d4d5d3; font-size: 10px; }
+.job-title span, .box-job-log-meta span:last-child { color: #9096a0; font: 9px var(--mono); }
+.box-job-log-meta { display: flex; justify-content: space-between; margin-top: 9px; color: #aeb2ba; font-size: 10px; }
+.box-job-popup pre { max-height: 220px; overflow: auto; margin: 7px 0 0; padding: 10px; border-radius: 6px; color: #9ca79f; background: #111315; font: 9px/1.5 var(--mono); white-space: pre-wrap; }
 .box-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; align-items: stretch; gap: 12px; padding: 10px 14px; overflow: hidden; }
 .box-viewer { min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #292d35; border-radius: 9px; background: #17191f; }
 .box-viewer-toolbar { display: flex; min-height: 34px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 10px; padding: 0 11px; border-bottom: 1px solid #292d35; color: #8f949e; font: 9px var(--mono); }

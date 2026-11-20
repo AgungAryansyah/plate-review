@@ -45,21 +45,27 @@ describe("Plate boxes", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/boxes/clips/clip-1/segment", expect.objectContaining({ method: "POST", body: "{}" })));
   });
 
-  it("keeps segmentation logs visible after the job completes and disables edits while it runs", async () => {
+  it("opens segmentation progress and logs in a header popup and disables edits while running", async () => {
     const activeDetail = { ...detail, clip: { ...clip, status: "running" as const, progress: 0.5 }, job: { status: "running" as const, progress: 0.5, phase: "Tracking", logs: ["Tracking frames"], error: null } };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/boxes/clips" ? response([activeDetail.clip]) : response(activeDetail));
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<BoxReview onBack={() => undefined} />);
     await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
-    expect(await screen.findByText("Tracking frames")).toBeInTheDocument();
+    expect(screen.queryByText("Tracking frames")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Plate text for box box-01" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Segmentation running" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Segmentation log" }));
+    expect(await screen.findByText("Tracking frames")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Segmentation progress and log" })).toBeInTheDocument();
 
     const completedDetail = { ...detail, job: { status: "complete" as const, progress: 1, phase: "Complete", logs: ["Export ready"], error: null } };
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => String(input) === "/api/boxes/clips" ? response([clip]) : response(completedDetail));
     await user.click(screen.getByRole("button", { name: /^←$/ }));
     await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
+    expect(screen.queryByText("Export ready")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Segmentation log" }));
     expect(await screen.findByText("Export ready")).toBeInTheDocument();
   });
 
