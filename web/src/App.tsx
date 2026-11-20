@@ -108,6 +108,9 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [now, setNow] = useState(Date.now());
   const [boxMode, setBoxMode] = useState(() => window.location.hash === "#boxes");
+  const [boxLibraryResetSeq, setBoxLibraryResetSeq] = useState(0);
+  const [boxClipName, setBoxClipName] = useState<string | null>(null);
+  const [libraryHidden, setLibraryHidden] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const draftRef = useRef<ReviewDraft | null>(null);
@@ -464,6 +467,7 @@ export default function App() {
         return;
       }
       if (boxMode) return;
+      if (event.key.toLowerCase() === "h") { event.preventDefault(); setLibraryHidden((value) => !value); return; }
       const video = videoRef.current;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); return; }
       if (!activeId || !video) return;
@@ -598,6 +602,28 @@ export default function App() {
     if (stageRef.current?.requestFullscreen) void stageRef.current.requestFullscreen();
   };
 
+  const handleBoxDetailChange = useCallback((hasDetail: boolean, clipName: string | null) => {
+    setBoxClipName(hasDetail ? clipName : null);
+  }, []);
+
+  const openClipReview = useCallback(() => {
+    setBoxMode(false);
+    setBoxClipName(null);
+  }, []);
+
+  const openBoxMode = useCallback((resetToLibrary = false) => {
+    if (!boxMode) {
+      void (async () => {
+        await flushRef.current().catch(() => undefined);
+        await releaseAndClose();
+        setBoxMode(true);
+        if (resetToLibrary) setBoxLibraryResetSeq((seq) => seq + 1);
+      })();
+      return;
+    }
+    if (resetToLibrary) setBoxLibraryResetSeq((seq) => seq + 1);
+  }, [boxMode, releaseAndClose]);
+
   if (!user) {
     return <main className="login-shell">
       <form className="login-card" onSubmit={submitLogin}>
@@ -615,14 +641,28 @@ export default function App() {
 
   return <div className="app-shell">
     <header className="topbar">
-      <div className="topbar-left"><div className="brand"><span className="brand-mark small">PR</span><div><strong>Plate Review</strong><span>{boxMode ? "Plate box dataset" : "Manual clip selection"}</span></div></div><div className="jobs-popover"><button className="jobs-popover-trigger" aria-expanded={jobsPopoverOpen} onClick={() => setJobsPopoverOpen((value) => !value)}>Export jobs <span className="jobs-active-pill">{activeJobCount}</span><i>{jobsPopoverOpen ? "⌃" : "⌄"}</i></button>{jobsPopoverOpen && <div className="jobs-popover-panel"><div className="jobs-popover-heading"><strong>Clip exports</strong><span>{activeJobCount} active · {jobs.length} total</span></div>{jobs.length ? jobs.map((job) => <div className="job-row" key={job.id}><div className="job-line"><span>{job.status === "complete" ? "Export complete" : job.phase}</span><b>{job.status === "complete" ? "DONE" : `${Math.round(job.progress*100)}%`}</b></div><div className="job-progress"><i style={{ width: `${job.progress*100}%` }} /></div>{job.error && <span className="job-error">{job.error}</span>}{job.items.filter((item) => item.error).map((item) => <span className="job-error" key={item.id}>{item.video_id.slice(0,8)}: {item.error}</span>)}{job.items.flatMap((item) => item.outputs).map((output) => <a className="output-link" key={`${job.id}-${output.file_name}`} href={`/api/exports/${job.id}/files/${encodeURIComponent(output.file_name)}`} download={output.file_name}>{output.file_name}<span>{humanBytes(output.bytes)}</span></a>)}{(job.status === "complete" || job.status === "failed") && <a className="manifest-link" href={`/api/exports/${job.id}/manifest`} download={`${job.id}-manifest.json`}>Download manifest</a>}{job.status === "failed" && <button className="small-button" onClick={() => void api<ExportJob>(`/api/exports/${job.id}/retry`, json("POST", {})).then((updated) => setJobs((current) => current.map((item) => item.id === updated.id ? updated : item))).catch((reason) => setError(reason.message))}>Retry failed files</button>}</div>) : <p className="jobs-popover-empty">No clip exports yet.</p>}</div>}</div></div>
-      <div className="topbar-right">{boxMode ? <button className="mode-button" onClick={() => setBoxMode(false)}>Clip review <span>↗</span></button> : <button className="mode-button" onClick={() => void (async () => { await flushRef.current().catch(() => undefined); await releaseAndClose(); setBoxMode(true); })()}>Plate boxes <span>↗</span></button>}<span className={`network-indicator ${isOnline ? "online" : "offline"}`}>{isOnline ? "Connected" : "Offline"}</span><span className="user-label">{user.username}</span><button className="quiet-button" onClick={() => setHelpOpen(true)}>Shortcuts <kbd>?</kbd></button><button className="quiet-button" onClick={() => void logout()}>Sign out</button></div>
+      <div className="topbar-left">
+        <div className="brand"><span className="brand-mark small">PR</span><div><strong>Plate Review</strong><span>{boxMode ? "Plate box dataset" : "Manual clip selection"}</span></div></div>
+        <nav className="topbar-nav" aria-label="Primary navigation">
+          <button className={`nav-tab ${!boxMode ? "active" : ""}`} aria-current={!boxMode ? "page" : undefined} onClick={openClipReview}>Clip review</button>
+          <button className={`nav-tab ${boxMode && !boxClipName ? "active" : ""}`} aria-current={boxMode && !boxClipName ? "page" : undefined} onClick={() => openBoxMode(true)}>Plate boxes</button>
+          {boxMode && boxClipName && <button className="nav-tab sub-tab" onClick={() => openBoxMode(true)} title={`Back to clip list from ${boxClipName}`}>Select clip</button>}
+        </nav>
+        <div className="jobs-popover"><button className="jobs-popover-trigger" aria-expanded={jobsPopoverOpen} onClick={() => setJobsPopoverOpen((value) => !value)}>Export jobs <span className="jobs-active-pill">{activeJobCount}</span><i>{jobsPopoverOpen ? "⌃" : "⌄"}</i></button>{jobsPopoverOpen && <div className="jobs-popover-panel"><div className="jobs-popover-heading"><strong>Clip exports</strong><span>{activeJobCount} active · {jobs.length} total</span></div>{jobs.length ? jobs.map((job) => <div className="job-row" key={job.id}><div className="job-line"><span>{job.status === "complete" ? "Export complete" : job.phase}</span><b>{job.status === "complete" ? "DONE" : `${Math.round(job.progress*100)}%`}</b></div><div className="job-progress"><i style={{ width: `${job.progress*100}%` }} /></div>{job.error && <span className="job-error">{job.error}</span>}{job.items.filter((item) => item.error).map((item) => <span className="job-error" key={item.id}>{item.video_id.slice(0,8)}: {item.error}</span>)}{job.items.flatMap((item) => item.outputs).map((output) => <a className="output-link" key={`${job.id}-${output.file_name}`} href={`/api/exports/${job.id}/files/${encodeURIComponent(output.file_name)}`} download={output.file_name}>{output.file_name}<span>{humanBytes(output.bytes)}</span></a>)}{(job.status === "complete" || job.status === "failed") && <a className="manifest-link" href={`/api/exports/${job.id}/manifest`} download={`${job.id}-manifest.json`}>Download manifest</a>}{job.status === "failed" && <button className="small-button" onClick={() => void api<ExportJob>(`/api/exports/${job.id}/retry`, json("POST", {})).then((updated) => setJobs((current) => current.map((item) => item.id === updated.id ? updated : item))).catch((reason) => setError(reason.message))}>Retry failed files</button>}</div>) : <p className="jobs-popover-empty">No clip exports yet.</p>}</div>}</div>
+      </div>
+      <div className="topbar-right">
+        {boxMode && boxClipName && <span className="topbar-clip-name" title={boxClipName}>{boxClipName}</span>}
+        <span className={`network-indicator ${isOnline ? "online" : "offline"}`}>{isOnline ? "Connected" : "Offline"}</span>
+        <span className="user-label">{user.username}</span>
+        <button className="quiet-button" onClick={() => setHelpOpen(true)}>Shortcuts <kbd>?</kbd></button>
+        <button className="quiet-button" onClick={() => void logout()}>Sign out</button>
+      </div>
     </header>
-    {boxMode ? <BoxReview onBack={() => setBoxMode(false)} /> : <>
+    {boxMode ? <BoxReview onBack={openClipReview} libraryResetSeq={boxLibraryResetSeq} onDetailChange={handleBoxDetailChange} /> : <>
     {error && !activeVideo && <div className="global-notice" role="status"><span>{error}</span><button aria-label="Dismiss message" onClick={() => setError("")}>×</button></div>}
-    <main className={`workspace ${activeId ? "has-editor" : ""}`}>
+    <main className={`workspace ${activeId ? "has-editor" : ""} ${libraryHidden ? "library-hidden" : ""}`}>
       <aside className="library-panel">
-        <div className="panel-heading"><div><p className="eyebrow">VIDEO LIBRARY</p><h2>Recordings</h2></div><div className="panel-heading-actions">{user.role === "admin" && <button className="icon-button" title="Refresh source index" onClick={() => void api("/api/admin/scan", json("POST", {})).then(refreshVideos).catch((reason) => setError(reason.message))}>↻</button>}<span className="count-pill">{videos.length}</span></div></div>
+        <div className="panel-heading"><div><p className="eyebrow">VIDEO LIBRARY</p><h2>Recordings</h2></div><div className="panel-heading-actions">{user.role === "admin" && <button className="icon-button" title="Refresh source index" onClick={() => void api("/api/admin/scan", json("POST", {})).then(refreshVideos).catch((reason) => setError(reason.message))}>↻</button>}<span className="count-pill">{videos.length}</span><button className="icon-button" aria-label="Hide video library" title="Hide video library (H)" onClick={() => setLibraryHidden(true)}>⟪</button></div></div>
         <div className="filters">
           <input aria-label="Search videos" placeholder="Search camera, folder, or file" value={search} onChange={(event) => setSearch(event.target.value)} />
           <select aria-label="Review status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="unreviewed">Unreviewed</option><option value="in_progress">In progress</option><option value="reviewed">Reviewed</option><option value="all">All videos</option></select>
@@ -656,7 +696,7 @@ export default function App() {
       <section className="review-area">
         {activeVideo && detail && draft ? <>
           <div className="editor-heading">
-            <div className="editor-title"><button className="back-button" aria-label="Close video" onClick={() => void releaseAndClose()}>←</button><div><h1>{activeVideo.camera_name.replaceAll("_", " ")}</h1><p>{activeVideo.session_id} <span>·</span> {activeVideo.source_path.split("/").at(-1)} <span>·</span> {activeVideo.width} × {activeVideo.height}</p></div></div>
+            <div className="editor-title"><button className="secondary-button library-toggle-button" aria-label={libraryHidden ? "Show video library" : "Hide video library"} title="Toggle video library (H)" onClick={() => setLibraryHidden((value) => !value)}>{libraryHidden ? "☰ Show videos" : "⟪ Hide videos"}</button><button className="back-button" aria-label="Close video" onClick={() => void releaseAndClose()}>←</button><div><h1>{activeVideo.camera_name.replaceAll("_", " ")}</h1><p>{activeVideo.session_id} <span>·</span> {activeVideo.source_path.split("/").at(-1)} <span>·</span> {activeVideo.width} × {activeVideo.height}</p></div></div>
             <div className="editor-actions"><span className={`save-state ${syncState}`}><i />{syncState === "saved" ? "Saved on server" : syncState === "saving" ? "Saving" : syncState === "offline" ? "Offline · changes pending" : syncState === "local_error" ? "Local save failed" : "Conflict requires attention"}</span><button className="primary-button" disabled={!claimHeld} onClick={markReviewed}>Mark reviewed <kbd>R</kbd></button></div>
           </div>
           {(error || readOnlyReason || isConflict) && <div className={`notice ${isConflict ? "notice-warning" : "notice-error"}`} role="status"><span>{error || readOnlyReason || "Resolve the local draft before editing."}</span>{isConflict && <button className="small-button" onClick={() => void applyDraft()}>Claim and apply local draft</button>}{activeVideo.source_status === "changed" && user.role === "admin" && <button className="small-button" onClick={() => void api(`/api/admin/videos/${activeVideo.id}/accept-source`, json("POST", {})).then(async () => { await refreshVideos(); const refreshed = await api<VideoDetail>(`/api/videos/${activeVideo.id}`); await openVideo(refreshed.video); }).catch((reason) => setError(reason.message))}>Accept changed source</button>}</div>}
@@ -688,13 +728,13 @@ export default function App() {
               <div className="review-status"><span className={`status-dot ${draft.status}`} /><div><strong>{draft.status.replace("_"," ")}</strong><span>{draft.status === "reviewed" ? `Last saved ${draftRef.current?.updatedAtMs ? new Date(draftRef.current.updatedAtMs).toLocaleTimeString() : ""}` : "Mark reviewed when this file is checked"}</span></div></div>
             </aside>
           </div>
-        </> : <div className="welcome-view"><div className="welcome-art"><div className="art-road"><span /><span /><span /></div><div className="art-car"><div className="car-window" /><div className="car-plate">PLATE</div><div className="wheel left" /><div className="wheel right" /></div><div className="scan-frame"><i /><i /><i /><i /></div></div><p className="eyebrow">PLATE REVIEW WORKSPACE</p><h1>Review at your own pace.</h1><p className="welcome-copy">Choose a recording, find the moments with visible plates, and mark the intervals to prepare for segmentation.</p><div className="welcome-steps"><span><i>01</i>Open a video</span><span><i>02</i>Mark with I and O</span><span><i>03</i>Export for SAM</span></div><div className="welcome-note">Your review progress saves as you work.</div></div>}
+        </> : <>{libraryHidden && <div className="collapsed-library-bar"><button className="secondary-button" aria-label="Show video library" onClick={() => setLibraryHidden(false)}>☰ Show videos ({videos.length})</button></div>}<div className="welcome-view"><div className="welcome-art"><div className="art-road"><span /><span /><span /></div><div className="art-car"><div className="car-window" /><div className="car-plate">PLATE</div><div className="wheel left" /><div className="wheel right" /></div><div className="scan-frame"><i /><i /><i /><i /></div></div><p className="eyebrow">PLATE REVIEW WORKSPACE</p><h1>Review at your own pace.</h1><p className="welcome-copy">Choose a recording, find the moments with visible plates, and mark the intervals to prepare for segmentation.</p><div className="welcome-steps"><span><i>01</i>Open a video</span><span><i>02</i>Mark with I and O</span><span><i>03</i>Export for SAM</span></div><div className="welcome-note">Your review progress saves as you work.</div></div></>}
       </section>
     </main>
 
     <footer className="bottom-bar"><div><span className="disk-dot" />Original videos remain on the server</div><div>{selectedForExport.size > 0 && <button className="export-button" onClick={() => void exportSelected()}>Export {selectedForExport.size} reviewed video{selectedForExport.size === 1 ? "" : "s"} <span>↗</span></button>}<span className="footer-status">{activeJobCount ? `${activeJobCount} export job(s) running` : "Export queue idle"}</span></div></footer>
     </>}
 
-    {helpOpen && <div className="modal-backdrop" onMouseDown={(event) => { if(event.target===event.currentTarget) setHelpOpen(false); }}><section className="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-title"><button className="modal-close" aria-label="Close" onClick={() => setHelpOpen(false)}>×</button><p className="eyebrow">{boxMode ? "PLATE BOXES WORKFLOW" : "KEYBOARD WORKFLOW"}</p><h2 id="shortcut-title">Review without reaching for the mouse.</h2>{boxMode ? <div className="shortcut-list"><span>Play / pause</span><kbd>Space / K</kbd><span>Step 1 / 10 frames</span><kbd>← / → (Shift)</kbd><span>Select track and jump</span><kbd>↑ / ↓ / 1–9</kbd><span>Jump to selected track</span><kbd>G</kbd><span>Edit plate text</span><kbd>Enter / E</kbd><span>Next / previous input</span><kbd>↓ / ↑ (in input)</kbd><span>Toggle include track</span><kbd>X</kbd><span>Toggle boxes / frame preview</span><kbd>B / F</kbd><span>Zoom / reset</span><kbd>+ / − / 0</kbd><span>Save / mark done</span><kbd>Ctrl + S / Ctrl + Enter (D)</kbd><span>Previous / next clip</span><kbd>P / N</kbd><span>Back to clip grid</span><kbd>Esc</kbd></div> : <div className="shortcut-list"><span>Play / pause</span><kbd>Space / K</kbd><span>Mark interval start / end</span><kbd>I / O</kbd><span>Previous / next interval</span><kbd>[ / ]</kbd><span>Delete interval at playhead</span><kbd>Delete / Backspace</kbd><span>Step 100 ms</span><kbd>← / →</kbd><span>Step 1 s / 10 s</span><kbd>Shift / Alt + arrows</kbd><span>Change speed</span><kbd>J / L</kbd><span>Zoom / reset</span><kbd>+ / − / 0</kbd><span>Undo / redo</span><kbd>Ctrl + Z / Shift</kbd><span>Save / mark reviewed / next</span><kbd>Ctrl + S / R / N</kbd><span>Close video / modal</span><kbd>Esc</kbd></div>}<p className="muted">Shortcuts pause when a text field is active. Scroll over the video to zoom around the pointer.</p></section></div>}
+    {helpOpen && <div className="modal-backdrop" onMouseDown={(event) => { if(event.target===event.currentTarget) setHelpOpen(false); }}><section className="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-title"><button className="modal-close" aria-label="Close" onClick={() => setHelpOpen(false)}>×</button><p className="eyebrow">{boxMode ? "PLATE BOXES WORKFLOW" : "KEYBOARD WORKFLOW"}</p><h2 id="shortcut-title">Review without reaching for the mouse.</h2>{boxMode ? <div className="shortcut-list"><span>Play / pause</span><kbd>Space / K</kbd><span>Step 1 / 10 frames</span><kbd>← / → (Shift)</kbd><span>Select track and jump</span><kbd>↑ / ↓ / 1–9</kbd><span>Jump to selected track</span><kbd>G</kbd><span>Edit plate text</span><kbd>Enter / E</kbd><span>Next / previous input</span><kbd>↓ / ↑ (in input)</kbd><span>Toggle include track</span><kbd>X</kbd><span>Toggle boxes / frame preview</span><kbd>B / F</kbd><span>Zoom / reset</span><kbd>+ / − / 0</kbd><span>Save / mark done</span><kbd>Ctrl + S / Ctrl + Enter (D)</kbd><span>Previous / next clip</span><kbd>P / N</kbd><span>Back to clip grid</span><kbd>Esc</kbd></div> : <div className="shortcut-list"><span>Play / pause</span><kbd>Space / K</kbd><span>Mark interval start / end</span><kbd>I / O</kbd><span>Previous / next interval</span><kbd>[ / ]</kbd><span>Delete interval at playhead</span><kbd>Delete / Backspace</kbd><span>Step 100 ms</span><kbd>← / →</kbd><span>Step 1 s / 10 s</span><kbd>Shift / Alt + arrows</kbd><span>Change speed</span><kbd>J / L</kbd><span>Zoom / reset</span><kbd>+ / − / 0</kbd><span>Toggle video list</span><kbd>H</kbd><span>Undo / redo</span><kbd>Ctrl + Z / Shift</kbd><span>Save / mark reviewed / next</span><kbd>Ctrl + S / R / N</kbd><span>Close video / modal</span><kbd>Esc</kbd></div>}<p className="muted">Shortcuts pause when a text field is active. Scroll over the video to zoom around the pointer.</p></section></div>}
   </div>;
 }

@@ -133,4 +133,64 @@ describe("sign-in and keyboard help", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(await screen.findByText("Review at your own pace.")).toBeInTheDocument();
   });
+
+  it("toggles the video library panel and navigates via the topbar", async () => {
+    const clip = {
+      id: "clip-1",
+      source_video_id: "video-1",
+      export_job_id: "export-1",
+      name: "drive-a-clip.mp4",
+      bytes: 1500,
+      duration_ms: 2100,
+      status: "complete" as const,
+      progress: 1,
+      error: null,
+      review_state: "need_label" as const,
+    };
+    const boxDetail = {
+      clip,
+      meta: { width: 1280, height: 720, fps: 25, frame_count: 53 },
+      tracks: [],
+      settings: { min_confidence: 0.45, jitter_px: 3, smoothing_radius: 2, minimum_frames: 2, max_area_fraction: 0.08, max_size_ratio: 3 },
+      revision: 1,
+      job: null,
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/auth/me") return response(200, { user: account });
+      if (path.startsWith("/api/videos?")) return response(200, []);
+      if (path === "/api/exports") return response(200, []);
+      if (path === "/api/boxes/clips") return response(200, [clip]);
+      if (path === "/api/boxes/clips/clip-1") return response(200, boxDetail);
+      return response(404, { error: "Not found" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Recordings" })).toBeInTheDocument();
+    const workspace = container.querySelector(".workspace") as HTMLElement;
+    expect(workspace).not.toHaveClass("library-hidden");
+
+    await user.click(screen.getByRole("button", { name: "Hide video library" }));
+    expect(workspace).toHaveClass("library-hidden");
+    expect(screen.getByRole("button", { name: "Show video library" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "h" });
+    expect(workspace).not.toHaveClass("library-hidden");
+
+    const nav = screen.getByRole("navigation", { name: "Primary navigation" });
+    await user.click(nav.querySelector("button:nth-child(2)") as HTMLElement);
+    expect(await screen.findByRole("heading", { name: "Plate clips" })).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: /drive-a-clip\.mp4/ }));
+    expect(await screen.findByRole("heading", { name: "drive-a-clip.mp4" })).toBeInTheDocument();
+
+    const selectClipBtn = await screen.findByRole("button", { name: "Select clip" });
+    await user.click(selectClipBtn);
+    expect(await screen.findByRole("heading", { name: "Plate clips" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Clip review" }));
+    expect(await screen.findByRole("heading", { name: "Recordings" })).toBeInTheDocument();
+  });
 });
